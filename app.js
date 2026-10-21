@@ -289,7 +289,7 @@
       updateCost();
       renderStatus();
       $('transcriptBox').classList.add('hidden');
-      Session.save(state.files);
+      for (const f of files) { f.editedText = null; persistFile(f); }
       ok = true;
     } catch (e) {
       if (isAbort(e)) toast('Cancelled');
@@ -348,7 +348,7 @@
     $('results').innerHTML = done.map((f) => {
       const hasLufs = f.parts.some((p) => p.lufs !== undefined);
       return `<div class="result">
-        <h3>${esc(f.name)}</h3>
+        <h3>${esc(f.title || f.name)}</h3>
         <div class="muted small">${f.parts.length} parts · ${f.mode === 'copy' ? 'lossless copy' : f.aac ? 're-encoded AAC' : 'WAV'}</div>
         <table class="parts">
           <thead><tr><th>#</th><th>Start – end</th><th class="hide-sm">Length</th><th>Size</th>${hasLufs ? '<th class="hide-sm">LUFS</th>' : ''}<th></th></tr></thead>
@@ -358,9 +358,9 @@
             <td class="hide-sm">${S.clock(p.end - p.start)}</td>
             <td>${fmtSize(p.size)}</td>
             ${hasLufs ? `<td class="hide-sm">${p.lufs == null ? '–' : p.lufs.toFixed(1)}</td>` : ''}
-            <td class="act">
+            <td class="act">${p.blob ? `
               <button class="btn icon" type="button" data-play="${f.id}:${p.index}" aria-label="Play part ${p.index + 1}">▶</button>
-              <button class="btn icon" type="button" data-dl="${f.id}:${p.index}" aria-label="Download part ${p.index + 1}">↓</button>
+              <button class="btn icon" type="button" data-dl="${f.id}:${p.index}" aria-label="Download part ${p.index + 1}">↓</button>` : '<span class="muted small">audio removed</span>'}
             </td></tr>`).join('')}</tbody>
         </table>
         <div class="actions">
@@ -372,7 +372,7 @@
         </div>
       </div>`;
     }).join('');
-    const all = done.flatMap((f) => f.parts.map((p) => new File([p.blob], p.name, { type: p.blob.type })));
+    const all = done.flatMap((f) => f.parts.filter((p) => p.blob).map((p) => new File([p.blob], p.name, { type: p.blob.type })));
     $('shareAllBtn').classList.toggle('hidden', !canShareFiles(all.slice(0, 1)));
   }
 
@@ -393,20 +393,21 @@
   }
   const textBlob = (s, type) => new Blob([s], { type: (type || 'text/plain') + ';charset=utf-8' });
 
-  async function zipAll() {
-    const done = state.files.filter((f) => f.parts && f.parts.length);
+  async function zipAll() { return zipFiles(state.files.filter((f) => f.parts && f.parts.length)); }
+
+  async function zipFiles(done) {
     if (!done.length) return;
     await setBusy(true, 'Building ZIP');
     try {
       const zip = new JSZip();
       for (const f of done) {
         const dir = done.length > 1 ? zip.folder(baseName(f.name)) : zip;
-        for (const p of f.parts) dir.file(p.name, p.blob);
+        for (const p of f.parts) if (p.blob) dir.file(p.name, p.blob);
         dir.file(baseName(f.name) + '_chapters.txt', S.chaptersTxt(f.parts));
         dir.file(baseName(f.name) + '.cue', S.cue(f.parts, f.name));
         dir.file(baseName(f.name) + '_chapters.json', S.chaptersJson(f.parts));
         if (f.transcript && f.transcript.length) {
-          dir.file(baseName(f.name) + '_transcript.txt', S.txt(f.transcript, true));
+          dir.file(baseName(f.name) + '_transcript.txt', f.editedText || viewText(f, true));
           dir.file(baseName(f.name) + '.srt', S.srt(f.transcript));
           dir.file(baseName(f.name) + '.vtt', S.vtt(f.transcript));
         }
@@ -493,6 +494,7 @@
       if (!f.parts) continue;
       for (const p of f.parts) {
         const key = f.id + ':' + p.index;
+        if (!p.blob) continue; // audio removed from the Library
         if (onlyKeys ? onlyKeys.includes(key) : p.tStatus !== 'done') {
           p.tStatus = 'queued'; p.tNote = '';
           jobs.push({ f, p });
@@ -509,12 +511,22 @@
         p.tStatus = 'running'; p.tNote = 'Transcribing';
         renderStatus();
         try {
-          p.transcript = await Transcribe.transcribePart(p, opt, state.abort.signal, (note) => { p.tNote = note; renderStatus(); });
+          const onNote = (note) => { p.tNote = note; renderStatus(); };
+          p.transcript = await Transcribe.transcribePart(p, opt, state.abort.signal, onNote);
+          // Whisper sometimes skips the end or a stretch: check and re-send just that stretch once.
+          let filled = 0;
+          try {
+            const an = f.analysis;
+            filled = await Transcribe.fillGaps(p, opt, state.abort.signal, an ? (a, b) => soundIn(an, p.start + a, p.start + b) : null, onNote);
+          } catch (e) {
+            if (isAbort(e)) throw e;
+            console.warn('Gap check failed', e);
+          }
           p.tStatus = 'done';
-          p.tNote = 'done';
+          p.tNote = filled ? `done · filled ${filled} missing stretch${filled > 1 ? 'es' : ''}` : 'done';
           f.transcript = Transcribe.merge(f.parts);
           showTranscript(f.id);
-          Session.save(state.files);
+          persistFile(f);
         } catch (e) {
           p.tStatus = e.name === 'AbortError' ? 'queued' : 'failed';
           p.tNote = e.name === 'AbortError' ? 'cancelled' : (e.status === 401 ? 'Invalid API key' : e.message);
@@ -527,12 +539,46 @@
       await setBusy(false);
       updateButtons();
     }
+    if (!opt.language) {
+      const touched = [...new Set(jobs.map((j) => j.f))];
+      const langs = [...new Set(touched.flatMap((f) => f.parts.map((p) => p.transcript && p.transcript.language)).filter(Boolean))];
+      $('langBanner').classList.toggle('hidden', langs.length < 2);
+      $('langText').textContent = `Parts came back in different languages (${langs.join(', ')}). If the conversation is mainly one language, pick it under Language and transcribe again for better results.`;
+    }
+    if (state.current) showTranscript(state.current.id);
     const failed = jobs.filter((j) => j.p.tStatus === 'failed').length;
     if (failed) toast(`${failed} part${failed > 1 ? 's' : ''} failed. Tap Retry.`);
     else if (!state.abort.signal.aborted) toast('Transcript ready');
   }
 
   function transcriptFiles() { return state.files.filter((f) => f.transcript && f.transcript.length); }
+
+  // Share of 10 ms frames in [t0, t1] that are clearly above the noise floor.
+  function soundIn(an, t0, t1) {
+    const i0 = Math.max(0, Math.floor(t0 / an.step)), i1 = Math.min(an.env.length, Math.ceil(t1 / an.step));
+    if (i1 <= i0) return true;
+    const thr = Math.pow(10, (an.floorDb + 10) / 10);
+    let n = 0;
+    for (let i = i0; i < i1; i++) if (an.env[i] > thr) n++;
+    return n / (i1 - i0) > 0.05;
+  }
+
+  // Full transcript text in part order, with a visible line for every part that has no text yet.
+  function viewText(f, withTimes) {
+    return f.parts.map((p) => {
+      if (p.transcript && p.transcript.segments.length) {
+        return S.txt(p.transcript.segments.map((x) => ({ ...x, start: x.start + p.start, end: x.end + p.start })), withTimes).trim();
+      }
+      const why = !p.blob ? 'audio removed' : p.tStatus === 'failed' ? 'failed, tap Transcribe missing parts' : 'not transcribed yet';
+      return `[Part ${p.index + 1} · ${S.clock(p.start)}–${S.clock(p.end)} · ${why}]`;
+    }).join('\n\n') + '\n';
+  }
+
+  function fitText() {
+    const ta = $('transcriptText');
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 2 + 'px';
+  }
 
   function showTranscript(fid) {
     const list = transcriptFiles();
@@ -542,10 +588,26 @@
     sel.classList.toggle('hidden', list.length < 2);
     if (fid != null) sel.value = String(fid);
     if (!list.some((f) => String(f.id) === sel.value)) sel.value = String(list[0].id);
-    state.current = list.find((f) => String(f.id) === sel.value);
-    const editing = document.activeElement === $('transcriptText');
-    if (!editing) $('transcriptText').value = S.txt(state.current.transcript, $('showTimes').checked);
+    const f = (state.current = list.find((x) => String(x.id) === sel.value));
+    const fresh = viewText(f, $('showTimes').checked);
+    // Never overwrite the user's own edits silently.
+    if (f.editedText != null) {
+      $('transcriptText').value = f.editedText;
+      $('updateBanner').classList.toggle('hidden', f.editedText === fresh);
+    } else {
+      $('transcriptText').value = fresh;
+      $('updateBanner').classList.add('hidden');
+    }
+    const done = f.parts.filter((p) => p.transcript && p.transcript.segments.length).length;
+    const total = f.parts.length;
+    const lastEnd = f.transcript.length ? f.transcript[f.transcript.length - 1].end : 0;
+    const words = f.transcript.reduce((a, x) => a + (x.text.trim() ? x.text.trim().split(/\s+/).length : 0), 0);
+    $('tStatusLine').textContent = `${done} of ${total} parts · text ends at ${S.clock(lastEnd)} of ${S.clock(f.parts[total - 1].end)} · ${words.toLocaleString()} words`;
+    const missing = f.parts.filter((p) => !(p.transcript && p.transcript.segments.length) && p.blob).length;
+    $('missingBanner').classList.toggle('hidden', !missing || state.busy);
+    $('missingText').textContent = `${done} of ${total} parts transcribed.`;
     $('transcriptBox').classList.remove('hidden');
+    requestAnimationFrame(fitText);
     $('shareTxtBtn').classList.toggle('hidden', !navigator.share);
   }
 
@@ -580,7 +642,7 @@
       renderResults();
       if (!state.files.some((x) => x.parts)) $('resultsCard').classList.add('hidden');
       updateButtons();
-      Session.save(state.files);
+      saveWorkspace(); // stays in the Library
     });
 
     $('unitSeg').addEventListener('click', (e) => {
@@ -635,7 +697,9 @@
       $('player').pause();
       $('player').classList.add('hidden');
       $('restoredNote').classList.add('hidden');
-      Session.clear();
+      $('langBanner').classList.add('hidden');
+      state.current = null;
+      saveWorkspace(); // everything stays in the Library
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 
@@ -662,7 +726,16 @@
       if ($('keyEntry').classList.contains('hidden')) $('keyChange').focus(); else $('apiKey').focus();
     });
     $('transcriptFile').addEventListener('change', () => showTranscript(+$('transcriptFile').value));
-    $('showTimes').addEventListener('change', () => { $('transcriptText').blur(); showTranscript(state.current && state.current.id); });
+    $('transcriptText').addEventListener('input', () => {
+      if (state.current) { state.current.editedText = $('transcriptText').value; persistFile(state.current); }
+      fitText();
+    });
+    $('updateBtn').addEventListener('click', () => {
+      if (state.current) { state.current.editedText = null; persistFile(state.current); showTranscript(state.current.id); }
+    });
+    $('missingBtn').addEventListener('click', () => { if (!state.busy) transcribe(); });
+    window.addEventListener('resize', fitText);
+    $('showTimes').addEventListener('change', () => showTranscript(state.current && state.current.id));
     $('copyBtn').addEventListener('click', () => navigator.clipboard.writeText($('transcriptText').value).then(() => toast('Transcript copied'), () => toast('Copy blocked by the browser')));
     $('shareTxtBtn').addEventListener('click', () => {
       const f = state.current;
@@ -762,34 +835,213 @@
     return '<ol><li>In Chrome or Edge, click the install icon at the right end of the address bar.</li><li>Or open the browser menu → <b>Install M4A Splitter</b>.</li></ol>';
   }
 
-  // Bring back parts and transcripts from the last session (reload, crash, tab killed).
-  async function restoreSession() {
-    const snap = await Session.load();
-    if (!snap || !snap.files || !snap.files.length || state.files.length) return;
-    for (const sf of snap.files) {
-      const parts = sf.parts.map((p) => ({ ...p, tStatus: p.tStatus === 'done' ? 'done' : undefined, tNote: p.tStatus === 'done' ? 'done' : '' }));
-      const f = {
-        id: nextId++, name: sf.name, mode: sf.mode, aac: sf.aac, restored: true, parts,
-        duration: parts[parts.length - 1].end,
-        info: `${S.clock(parts[parts.length - 1].end)} · ${parts.length} parts`, status: 'Restored',
-      };
-      f.transcript = Transcribe.merge(parts);
-      state.files.push(f);
+  // ---------- Library ----------
+  const WS_STORE = 'm4asplit.workspace';
+
+  function toEntry(f) {
+    return {
+      id: f.entryId, title: f.title, name: f.name, mode: f.mode, aac: !!f.aac,
+      createdAt: f.createdAt, duration: f.parts[f.parts.length - 1].end, audioRemoved: !!f.audioRemoved,
+      editedText: f.editedText == null ? null : f.editedText,
+      parts: f.parts.map((p) => ({
+        index: p.index, start: p.start, end: p.end, snapped: p.snapped, blob: p.blob || null, size: p.size,
+        name: p.name, lufs: p.lufs, transcript: p.transcript || null, tStatus: p.tStatus === 'done' ? 'done' : null,
+      })),
+    };
+  }
+
+  // Save one recording to the Library (creates the entry on first save).
+  function persistFile(f) {
+    if (!f.parts || !f.parts.length) return;
+    if (!f.entryId) {
+      f.entryId = Library.newId();
+      f.createdAt = Date.now();
+      f.title = f.title || baseName(f.name);
+      Library.persist();
+    }
+    Library.save(toEntry(f)).then(refreshLibCount);
+    saveWorkspace();
+  }
+
+  // Which Library entries are open on the New tab, so a reload or killed tab comes back.
+  function saveWorkspace() {
+    store.set(WS_STORE, JSON.stringify(state.files.filter((f) => f.entryId).map((f) => f.entryId)));
+  }
+
+  function fileFromEntry(e) {
+    const parts = e.parts.map((p) => ({ ...p, tStatus: p.tStatus === 'done' ? 'done' : undefined, tNote: p.tStatus === 'done' ? 'done' : !p.blob ? 'audio removed' : '' }));
+    return {
+      id: nextId++, entryId: e.id, title: e.title, name: e.name, mode: e.mode, aac: e.aac, restored: true,
+      createdAt: e.createdAt, audioRemoved: !!e.audioRemoved, editedText: e.editedText == null ? null : e.editedText, parts,
+      duration: e.duration, transcript: Transcribe.merge(parts),
+      info: `${S.clock(e.duration)} · ${parts.length} parts${e.audioRemoved ? ' · audio removed' : ''}`, status: 'From Library',
+    };
+  }
+
+  function openEntries(entries) {
+    for (const e of entries) {
+      if (state.files.some((f) => f.entryId === e.id)) continue;
+      state.files.push(fileFromEntry(e));
     }
     renderFiles();
     renderResults();
     renderStatus();
     updateCost();
-    $('resultsCard').classList.remove('hidden');
-    $('restoredNote').classList.remove('hidden');
-    if (state.files.some((f) => f.transcript.length)) showTranscript();
+    if (state.files.some((f) => f.parts)) $('resultsCard').classList.remove('hidden');
+    $('restoredNote').classList.toggle('hidden', !state.files.some((f) => f.restored));
+    if (transcriptFiles().length) showTranscript(entries.length ? state.files.find((f) => f.entryId === entries[entries.length - 1].id).id : undefined);
     updateButtons();
+    saveWorkspace();
+  }
+
+  async function startLibrary() {
+    let ids = [];
+    try { ids = JSON.parse(store.get(WS_STORE) || '[]'); } catch (e) { /* ignore */ }
+    ids = ids.concat(await Library.migrate().catch(() => []));
+    await Library.cleanup().catch(() => 0);
+    if (ids.length && !state.files.length) {
+      const entries = (await Promise.all(ids.map((id) => Library.get(id)))).filter(Boolean);
+      if (entries.length) openEntries(entries);
+    }
+    refreshLibCount();
+  }
+
+  async function refreshLibCount() {
+    const all = await Library.list();
+    $('libCount').textContent = all.length;
+    if (!$('libView').classList.contains('hidden')) renderLibrary(all);
+  }
+
+  function showView(lib) {
+    $('newView').classList.toggle('hidden', lib);
+    $('libView').classList.toggle('hidden', !lib);
+    $('tabNew').setAttribute('aria-selected', String(!lib));
+    $('tabLib').setAttribute('aria-selected', String(lib));
+    if (lib) renderLibrary();
+    window.scrollTo({ top: 0 });
+  }
+
+  const entryText = (e, times = true) => {
+    if (e.editedText) return e.editedText;
+    return viewText({ parts: e.parts.map((p) => ({ ...p, tStatus: p.tStatus })) }, times);
+  };
+  const entryDone = (e) => e.parts.filter((p) => p.transcript && p.transcript.segments.length).length;
+
+  function snippet(text, q) {
+    const flat = text.replace(/\[\d+:\d\d:\d\d\]\s*/g, '').replace(/\s+/g, ' ').trim();
+    if (!q) return esc(flat.slice(0, 220));
+    const i = flat.toLowerCase().indexOf(q);
+    if (i < 0) return esc(flat.slice(0, 220));
+    const a = Math.max(0, i - 80);
+    const part = flat.slice(a, i + q.length + 140);
+    const j = i - a;
+    return (a ? '…' : '') + esc(part.slice(0, j)) + '<mark>' + esc(part.slice(j, j + q.length)) + '</mark>' + esc(part.slice(j + q.length));
+  }
+
+  async function renderLibrary(all) {
+    all = all || (await Library.list());
+    const q = $('libSearch').value.trim().toLowerCase();
+    const rows = all.filter((e) => !q || (e.title || '').toLowerCase().includes(q) || entryText(e, false).toLowerCase().includes(q));
+    const date = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' + new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    $('libList').innerHTML = rows.length ? rows.map((e) => {
+      const done = entryDone(e), n = e.parts.length;
+      const audioUntil = new Date(e.createdAt + Library.AUDIO_DAYS * 864e5).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      const hasText = done > 0;
+      return `<div class="entry" data-id="${e.id}">
+        <input class="title" value="${esc(e.title || e.name)}" data-title="${e.id}" aria-label="Title">
+        <div class="meta">${date(e.createdAt)} · ${S.clock(e.duration)} · transcribed ${done}/${n} · ${e.audioRemoved ? 'audio removed' : 'audio kept until ' + audioUntil}</div>
+        ${hasText ? `<div class="snippet">${snippet(entryText(e, false), q)}</div>` : '<div class="snippet muted">No transcript yet.</div>'}
+        <div class="actions">
+          <button class="btn small" type="button" data-act="open">Open</button>
+          ${hasText ? `<button class="btn small" type="button" data-act="copy">Copy text</button>
+          ${navigator.share ? '<button class="btn small" type="button" data-act="share">Share</button>' : ''}
+          <button class="btn small" type="button" data-act="txt">.txt</button>
+          <button class="btn small" type="button" data-act="srt">.srt</button>
+          <button class="btn small" type="button" data-act="vtt">.vtt</button>
+          <button class="btn small" type="button" data-act="json">.json</button>` : ''}
+          ${e.audioRemoved ? '' : `<button class="btn small" type="button" data-act="zip">Audio ZIP</button>
+          <button class="btn small" type="button" data-act="noaudio">Delete audio</button>`}
+          <button class="btn small" type="button" data-act="delete">Delete</button>
+        </div>
+      </div>`;
+    }).join('') : `<div class="empty">${q ? 'Nothing matches “' + esc(q) + '”.' : 'Finished recordings appear here automatically.'}</div>`;
+    const used = await Library.usage();
+    $('libStorage').textContent = `${all.length} recording${all.length === 1 ? '' : 's'}${used != null ? ' · ' + fmtSize(used) + ' used on this device' : ''} · audio is removed after ${Library.AUDIO_DAYS} days, transcripts are kept.`;
+  }
+
+  async function libraryAction(id, act) {
+    const e = await Library.get(id);
+    if (!e) return;
+    const b = (e.title || baseName(e.name)).replace(/[\\/:*?"<>|]+/g, '_');
+    const segs = Transcribe.merge(e.parts);
+    if (act === 'open') { showView(false); openEntries([e]); $('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    if (act === 'copy') navigator.clipboard.writeText(entryText(e)).then(() => toast('Transcript copied'), () => toast('Copy blocked by the browser'));
+    if (act === 'share') {
+      const file = new File([textBlob(entryText(e))], b + '_transcript.txt', { type: 'text/plain' });
+      if (canShareFiles([file])) shareFiles([file], e.title);
+      else navigator.share({ title: e.title, text: entryText(e) }).catch(() => {});
+    }
+    if (act === 'txt') download(textBlob(entryText(e)), b + '_transcript.txt');
+    if (act === 'srt') download(textBlob(S.srt(segs)), b + '.srt');
+    if (act === 'vtt') download(textBlob(S.vtt(segs), 'text/vtt'), b + '.vtt');
+    if (act === 'json') download(textBlob(JSON.stringify({ title: e.title, file: e.name, segments: segs }, null, 2), 'application/json'), b + '_transcript.json');
+    if (act === 'zip') zipFiles([fileFromEntry(e)]);
+    if (act === 'noaudio') {
+      if (!confirm('Delete the audio of “' + e.title + '”? The transcript is kept.')) return;
+      await Library.removeAudio(id);
+      dropFromWorkspace(id);
+      toast('Audio deleted, transcript kept');
+    }
+    if (act === 'delete') {
+      if (!confirm('Delete “' + e.title + '” with its transcript? This cannot be undone.')) return;
+      await Library.remove(id);
+      dropFromWorkspace(id);
+      toast('Deleted');
+    }
+    refreshLibCount();
+  }
+
+  // If an entry changed in the Library, close it on the New tab (it can be reopened).
+  function dropFromWorkspace(id) {
+    const f = state.files.find((x) => x.entryId === id);
+    if (!f) return;
+    revokeParts(f);
+    state.files = state.files.filter((x) => x !== f);
+    if (state.current === f) state.current = null;
+    renderFiles();
+    renderResults();
+    renderStatus();
+    if (!state.files.some((x) => x.parts)) { $('resultsCard').classList.add('hidden'); $('transcriptBox').classList.add('hidden'); }
+    else if (transcriptFiles().length) showTranscript();
+    saveWorkspace();
+  }
+
+  function bindLibrary() {
+    $('tabNew').addEventListener('click', () => showView(false));
+    $('tabLib').addEventListener('click', () => showView(true));
+    $('libSearch').addEventListener('input', () => renderLibrary());
+    $('libList').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-act]');
+      if (b) libraryAction(b.closest('.entry').dataset.id, b.dataset.act);
+    });
+    $('libList').addEventListener('change', async (ev) => {
+      const t = ev.target.closest('[data-title]');
+      if (!t) return;
+      const e = await Library.get(t.dataset.title);
+      if (!e) return;
+      e.title = t.value.trim() || baseName(e.name);
+      await Library.put(e);
+      const f = state.files.find((x) => x.entryId === e.id);
+      if (f) { f.title = e.title; renderResults(); }
+      toast('Renamed');
+    });
   }
 
   bind();
+  bindLibrary();
   restoreSettings();
   updateButtons();
-  restoreSession();
+  startLibrary();
   setupPwa();
   window.__app = state; // handy for debugging and tests
 })();

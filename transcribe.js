@@ -90,6 +90,62 @@
     }
   }
 
+  // Stretches of a part with no text: a missing tail (> 15 s) or gaps (> 30 s).
+  // hasSound(t0, t1) can veto gaps that are real silence; times are part-relative.
+  function findGaps(transcript, partDur, hasSound) {
+    const segs = (transcript.segments || []).filter((x) => x.text && x.text.trim()).sort((a, b) => a.start - b.start);
+    const gaps = [];
+    if (!segs.length) {
+      if (partDur > 15) gaps.push([0, partDur]);
+    } else {
+      if (segs[0].start > 30) gaps.push([0, segs[0].start]);
+      for (let i = 1; i < segs.length; i++) if (segs[i].start - segs[i - 1].end > 30) gaps.push([segs[i - 1].end, segs[i].start]);
+      const last = segs[segs.length - 1].end;
+      if (partDur - last > 15) gaps.push([last, partDur]);
+    }
+    return gaps.filter(([a, b]) => !hasSound || hasSound(a, b));
+  }
+
+  // Cut [a, b] seconds out of a part's audio (lossless for M4A, WAV otherwise).
+  async function clip(blob, a, b) {
+    const ab = await blob.arrayBuffer();
+    try {
+      const d = await M4A.demux(ab);
+      return { blob: M4A.muxFrames(d, M4A.frameAt(d, a), Math.max(M4A.frameAt(d, a) + 1, M4A.frameAt(d, b))), ext: 'm4a' };
+    } catch (e) {
+      const buf = await M4A.decodeWhole(ab);
+      const sr = buf.sampleRate;
+      return { blob: M4A.wavBlob(buf, Math.floor(a * sr), Math.min(buf.length, Math.ceil(b * sr))), ext: 'wav' };
+    }
+  }
+
+  // Re-transcribe each gap once (with 2 s of lead-in) and merge the new text in.
+  // Returns the number of gaps that produced text.
+  async function fillGaps(part, opt, signal, hasSound, onStatus) {
+    const dur = part.end - part.start;
+    const gaps = findGaps(part.transcript, dur, hasSound);
+    let filled = 0;
+    for (let g = 0; g < gaps.length; g++) {
+      const [ga, gb] = gaps[g];
+      const a = Math.max(0, ga - 2), b = Math.min(dur, gb + 0.5);
+      onStatus && onStatus(`Checking missing text ${g + 1}/${gaps.length}`);
+      const c = await clip(part.blob, a, b);
+      const sub = { blob: c.blob, name: part.name.replace(/\.\w+$/, '') + `_gap${g + 1}.${c.ext}`, start: 0, end: b - a };
+      const r = await transcribePart(sub, opt, signal);
+      // Keep only text that falls inside the gap (drops the overlapped lead-in).
+      const fresh = r.segments
+        .map((x) => ({ start: x.start + a, end: x.end + a, text: x.text }))
+        .filter((x) => x.text.trim() && (x.start + x.end) / 2 >= ga - 0.25 && x.start <= gb + 0.25);
+      if (fresh.length) {
+        part.transcript.segments = part.transcript.segments.concat(fresh).sort((p, q) => p.start - q.start);
+        filled++;
+      }
+    }
+    part.transcript.checked = true;
+    part.transcript.filled = (part.transcript.filled || 0) + filled;
+    return filled;
+  }
+
   // Run jobs with a fixed number in flight.
   async function runQueue(jobs, concurrency, worker) {
     let next = 0;
@@ -112,5 +168,5 @@
     return out;
   }
 
-  window.Transcribe = { GROQ_URL, MAX_BYTES, PRICE_PER_HOUR, estimateCost, transcribePart, runQueue, merge };
+  window.Transcribe = { GROQ_URL, MAX_BYTES, PRICE_PER_HOUR, estimateCost, transcribePart, runQueue, merge, findGaps, fillGaps };
 })();

@@ -33,6 +33,18 @@ Open the hosted link in Chrome and tap **Install** (or ⋮ → **Add to Home scr
 
 Cost: turbo about $0.04 per hour of audio, large-v3 about $0.11. Only this step sends audio out, part by part, to Groq. Any OpenAI-compatible endpoint can be set under Advanced.
 
+## Complete transcripts
+- The transcript box grows with the text, so nothing hides inside it. A line shows "x of y parts · text ends at mm:ss of mm:ss · words".
+- Parts without text appear inline (`[Part 6 · 50:00–58:12 · not transcribed yet]`) with **Transcribe missing parts**.
+- After each part the app checks for a missing end (> 15 s) or gaps (> 30 s with sound) and re-sends just that stretch once.
+- Your own edits are never overwritten: new text shows an **Update** prompt.
+- If parts come back in different languages, a hint suggests picking the language.
+
+## Library
+- Every split is saved automatically. **Library** tab: rename, search titles and transcripts, open again, copy/share/download the transcript, audio ZIP, delete audio, delete.
+- **New recording** clears the page; nothing is lost.
+- Audio is removed after 30 days, transcripts are kept.
+
 ## Long jobs, screen off, refresh
 - A progress bar with % and time left stays pinned at the bottom, with **Cancel**.
 - Reloading or closing while working asks "Leave site?". Pull-to-refresh is disabled.
@@ -43,4 +55,4 @@ Cost: turbo about $0.04 per hour of audio, large-v3 about $0.11. Only this step 
 Chrome, Edge, Safari: full support. Firefox (incl. Android) uses a slower chunked decoder for pause finding, with progress. Browsers that cannot decode AAC at all (open-source Chromium on Linux) still split losslessly, but Smart split falls back to exact cuts.
 
 ## Files
-`index.html` UI · `app.js` logic · `m4a.js` lossless demux/mux · `analysis.js` pauses + LUFS · `transcribe.js` Groq client · `session.js` save/resume · `subtitles.js` exports · `sw.js` + `manifest.json` install/offline/share · `vendor/` mp4box 0.5.2, mp4-muxer 5.1.3, JSZip 3.10.1
+`index.html` UI · `app.js` logic · `m4a.js` lossless demux/mux · `analysis.js` pauses + LUFS · `transcribe.js` Groq client · `library.js` Library + save/resume · `subtitles.js` exports · `sw.js` + `manifest.json` install/offline/share · `vendor/` mp4box 0.5.2, mp4-muxer 5.1.3, JSZip 3.10.1

@@ -66,7 +66,7 @@ header .spacer { flex: 1; }
 .seg { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 3px; }
 .seg button { border: 0; background: transparent; color: var(--muted); padding: 8px 14px; border-radius: 8px; font: inherit; font-size: 14px; cursor: pointer; min-height: 40px; }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-weight: 600; }
-input[type="number"], input[type="text"], input[type="password"], input[type="url"], select, textarea {
+input[type="number"], input[type="text"], input[type="password"], input[type="url"], input[type="search"], select, textarea {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; min-height: 44px;
 }
 input[type="number"] { width: 110px; }
@@ -120,7 +120,23 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
 @keyframes pulse { 50% { opacity: .35; } }
 .status-list .grow { flex: 1; }
 .err { color: var(--err); }
-#transcriptText { min-height: 260px; font-size: 15px; line-height: 1.6; margin-top: 10px; }
+#transcriptText { min-height: 160px; font-size: 15px; line-height: 1.6; margin-top: 10px; overflow: hidden; resize: none; }
+.tstatus { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.banner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 10px; background: var(--surface-2); }
+.banner.warn { background: color-mix(in srgb, var(--warn) 14%, var(--surface)); }
+.tabs { display: flex; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--border); }
+.tabs button { font: inherit; font-size: 15px; font-weight: 600; background: none; border: 0; border-bottom: 3px solid transparent; color: var(--muted); padding: 10px 14px; cursor: pointer; min-height: 44px; }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tabs .count { font-size: 12px; background: var(--surface-2); border-radius: 99px; padding: 1px 7px; margin-left: 4px; color: var(--muted); }
+.lib-search { width: 100%; margin-bottom: 12px; }
+.entry { border-top: 1px solid var(--border); padding: 14px 0; }
+.entry:first-child { border-top: 0; padding-top: 0; }
+.entry .title { width: 100%; font-weight: 600; font-size: 16px; border: 1px solid transparent; background: transparent; padding: 4px 6px; margin-left: -6px; min-height: 36px; }
+.entry .title:hover, .entry .title:focus { border-color: var(--border); background: var(--surface); }
+.entry .meta { font-size: 13px; color: var(--muted); margin: 2px 0 6px; }
+.entry .snippet { font-size: 14px; margin: 4px 0 8px; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.entry mark { background: var(--accent-soft); color: inherit; border-radius: 3px; }
+.empty { text-align: center; padding: 28px 8px; color: var(--muted); }
 .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 10; max-width: calc(100% - 32px); }
 .keep-open { font-size: 13px; color: var(--warn); margin: 6px 0 0; }
 
@@ -164,6 +180,11 @@ dialog li { margin: 4px 0; }
     <button id="settingsBtn" class="btn small" type="button" aria-label="Groq key settings">⚙ Key</button>
     <button id="installBtn" class="btn small" type="button">Install</button>
   </header>
+  <nav class="tabs" role="tablist">
+    <button type="button" role="tab" id="tabNew" aria-selected="true">New</button>
+    <button type="button" role="tab" id="tabLib" aria-selected="false">Library <span class="count" id="libCount">0</span></button>
+  </nav>
+  <div id="newView">
   <ol class="steps" id="steps">
     <li data-step="1"><span class="step">1</span> Recording</li>
     <li class="arrow" aria-hidden="true">→</li>
@@ -217,12 +238,12 @@ dialog li { margin: 4px 0; }
 
   <section class="card hidden" id="resultsCard">
     <h2><span class="step">✓</span> Parts</h2>
-    <div class="restored hidden" id="restoredNote"><span>↺ Restored from your last session. Finished parts and transcripts were kept.</span></div>
+    <div class="restored hidden" id="restoredNote"><span>↺ Reopened from the Library. Finished parts and transcripts were kept.</span></div>
     <div id="results"></div>
     <div class="actions" style="margin-top:14px">
       <button type="button" class="btn primary" id="zipBtn">Download all (ZIP)</button>
       <button type="button" class="btn hidden" id="shareAllBtn">Share all</button>
-      <button type="button" class="btn" id="resetBtn">Split another file</button>
+      <button type="button" class="btn" id="resetBtn">New recording</button>
     </div>
     <audio id="player" class="hidden" controls></audio>
   </section>
@@ -288,7 +309,11 @@ dialog li { margin: 4px 0; }
         <select id="transcriptFile" class="hidden" aria-label="Transcript for file"></select>
         <label class="check"><input id="showTimes" type="checkbox" checked> Timestamps</label>
       </div>
+      <div class="banner warn hidden" id="missingBanner"><span id="missingText"></span><button type="button" class="btn small" id="missingBtn">Transcribe missing parts</button></div>
+      <div class="banner hidden" id="langBanner"><span id="langText"></span></div>
+      <div class="banner hidden" id="updateBanner"><span>New text arrived. Update replaces your edits.</span><button type="button" class="btn small" id="updateBtn">Update</button></div>
       <textarea id="transcriptText" spellcheck="true" aria-label="Transcript"></textarea>
+      <div class="tstatus" id="tStatusLine"></div>
       <div class="actions">
         <button type="button" class="btn" id="copyBtn">Copy</button>
         <button type="button" class="btn hidden" id="shareTxtBtn">Share</button>
@@ -299,6 +324,16 @@ dialog li { margin: 4px 0; }
       </div>
     </div>
   </section>
+  </div>
+
+  <div id="libView" class="hidden">
+    <section class="card">
+      <h2>Library</h2>
+      <input type="search" class="lib-search" id="libSearch" placeholder="Search titles and transcripts" aria-label="Search library">
+      <div id="libList"></div>
+      <p class="hint" id="libStorage"></p>
+    </section>
+  </div>
 </div>
 <div class="progress hidden" id="progress" role="status" aria-live="polite">
   <div class="inner">
@@ -322,7 +357,7 @@ dialog li { margin: 4px 0; }
 <script src="analysis.js"></script>
 <script src="subtitles.js"></script>
 <script src="transcribe.js"></script>
-<script src="session.js"></script>
+<script src="library.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
