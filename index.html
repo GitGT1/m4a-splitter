@@ -31,6 +31,7 @@
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
+html, body { overscroll-behavior-y: contain; } /* no accidental pull-to-refresh */
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -86,10 +87,16 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent);
 .chip:hover { background: var(--accent-soft); }
 .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
 
-.progress { margin-top: 14px; }
-.bar { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.progress { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -4px 16px rgba(0, 0, 0, .08); padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
+.progress .inner { max-width: 860px; margin: 0 auto; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; }
+.progress .top { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; font-weight: 600; }
+.progress .pct { font-variant-numeric: tabular-nums; }
+.bar { height: 10px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
 .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-.progress p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.progress p { margin: 0; font-size: 12px; color: var(--muted); grid-column: 1 / -1; }
+.progress .btn { grid-row: 1 / 3; grid-column: 2; }
+body.busy .wrap { padding-bottom: 150px; }
+.restored { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 14px; margin-bottom: 12px; }
 
 .result { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
 .result:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
@@ -206,15 +213,11 @@ dialog li { margin: 4px 0; }
       </div>
       <p class="hint">Uses the length above. Quick split cuts at exact times. Smart split moves each cut to the nearest pause (within 10% of the part length, max 15 s), so no word is cut in half.</p>
     </details>
-    <div class="progress hidden" id="progress">
-      <div class="bar"><div id="barFill"></div></div>
-      <p id="progressText">Working</p>
-      <p class="keep-open">Keep this screen open until it finishes.</p>
-    </div>
   </section>
 
   <section class="card hidden" id="resultsCard">
     <h2><span class="step">✓</span> Parts</h2>
+    <div class="restored hidden" id="restoredNote"><span>↺ Restored from your last session. Finished parts and transcripts were kept.</span></div>
     <div id="results"></div>
     <div class="actions" style="margin-top:14px">
       <button type="button" class="btn primary" id="zipBtn">Download all (ZIP)</button>
@@ -275,7 +278,6 @@ dialog li { margin: 4px 0; }
     </details>
     <div class="row" style="margin-top:14px">
       <button type="button" class="btn primary" id="transcribeBtn">Transcribe parts</button>
-      <button type="button" class="btn hidden" id="cancelBtn">Cancel</button>
       <span class="muted small" id="costEst"></span>
     </div>
     <p class="hint">Only the transcription step sends audio out, part by part, to Groq.</p>
@@ -298,6 +300,14 @@ dialog li { margin: 4px 0; }
     </div>
   </section>
 </div>
+<div class="progress hidden" id="progress" role="status" aria-live="polite">
+  <div class="inner">
+    <div class="top"><span id="progressText">Working</span><span class="pct" id="progressPct">0%</span></div>
+    <div class="bar"><div id="barFill"></div></div>
+    <button type="button" class="btn small" id="stopBtn">Cancel</button>
+    <p id="progressNote">Keep the screen on. Locking the phone or switching apps can pause this; it continues when you come back. Finished parts are saved.</p>
+  </div>
+</div>
 <dialog id="installDlg">
   <h3>Install on your device</h3>
   <div id="installSteps"></div>
@@ -312,6 +322,7 @@ dialog li { margin: 4px 0; }
 <script src="analysis.js"></script>
 <script src="subtitles.js"></script>
 <script src="transcribe.js"></script>
+<script src="session.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

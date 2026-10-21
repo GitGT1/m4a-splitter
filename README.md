@@ -33,8 +33,14 @@ Open the hosted link in Chrome and tap **Install** (or ⋮ → **Add to Home scr
 
 Cost: turbo about $0.04 per hour of audio, large-v3 about $0.11. Only this step sends audio out, part by part, to Groq. Any OpenAI-compatible endpoint can be set under Advanced.
 
+## Long jobs, screen off, refresh
+- A progress bar with % and time left stays pinned at the bottom, with **Cancel**.
+- Reloading or closing while working asks "Leave site?". Pull-to-refresh is disabled.
+- The screen is kept on while working. If you lock the phone or switch apps, Android pauses the page; it continues when you come back.
+- Finished parts and transcripts are saved on the device. If Android closes the page, reopen the app: it restores them, and **Transcribe parts** only sends what is still missing.
+
 ## Browsers
-Chrome, Edge, Safari: full support. Browsers without an AAC decoder (some Linux builds, open-source Chromium) still split losslessly, but Smart split falls back to exact cuts and loudness is unavailable.
+Chrome, Edge, Safari: full support. Firefox (incl. Android) uses a slower chunked decoder for pause finding, with progress. Browsers that cannot decode AAC at all (open-source Chromium on Linux) still split losslessly, but Smart split falls back to exact cuts.
 
 ## Files
-`index.html` UI · `app.js` logic · `m4a.js` lossless demux/mux · `analysis.js` pauses + LUFS · `transcribe.js` Groq client · `subtitles.js` exports · `sw.js` + `manifest.json` install/offline/share · `vendor/` mp4box 0.5.2, mp4-muxer 5.1.3, JSZip 3.10.1
+`index.html` UI · `app.js` logic · `m4a.js` lossless demux/mux · `analysis.js` pauses + LUFS · `transcribe.js` Groq client · `session.js` save/resume · `subtitles.js` exports · `sw.js` + `manifest.json` install/offline/share · `vendor/` mp4box 0.5.2, mp4-muxer 5.1.3, JSZip 3.10.1

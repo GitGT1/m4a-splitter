@@ -122,7 +122,7 @@
 
   // Stream-decode every frame with WebCodecs and hand PCM to onPcm(channels[], length, sampleRate).
   // Keeps memory flat on phones: nothing but the current block is ever held.
-  async function decodeStream(d, onPcm, onProgress) {
+  async function decodeStream(d, onPcm, onProgress, signal) {
     if (typeof AudioDecoder === 'undefined') return false;
     const { meta, samples } = d;
     const cfg = { codec: meta.codec, sampleRate: meta.sampleRate, numberOfChannels: meta.channels, description: meta.asc };
@@ -132,9 +132,10 @@
     } catch (e) {
       return false;
     }
-    let error = null;
+    let error = null, outputs = 0;
     const dec = new AudioDecoder({
       output: (ad) => {
+        outputs++;
         try {
           const n = ad.numberOfFrames, ch = ad.numberOfChannels;
           const chans = [];
@@ -172,17 +173,23 @@
       error: (e) => { error = e; },
     });
     dec.configure(cfg);
+    const t0 = Date.now();
+    const stop = () => { try { if (dec.state !== 'closed') dec.close(); } catch (e) { /* closed */ } };
     let ts = 0;
     for (let i = 0; i < samples.length; i++) {
       if (error) break;
+      if (signal && signal.aborted) { stop(); throw new DOMException('Cancelled', 'AbortError'); }
+      // Some phone decoders accept input but never produce output: give up and use the fallback.
+      if (outputs === 0 && i > 200 && Date.now() - t0 > 6000) { stop(); return false; }
       const s = samples[i];
       const dur = (s.duration / meta.timescale) * 1e6;
       dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(ts), duration: Math.round(dur), data: s.data }));
       ts += dur;
       if (dec.decodeQueueSize > 48) {
         await new Promise((r) => {
-          const done = () => { dec.removeEventListener('dequeue', done); r(); };
-          if ('ondequeue' in dec) dec.addEventListener('dequeue', done); else setTimeout(r, 1);
+          const done = () => { dec.removeEventListener('dequeue', done); clearTimeout(t); r(); };
+          const t = setTimeout(done, 50); // never wait on a dequeue event that may not come
+          if ('ondequeue' in dec) dec.addEventListener('dequeue', done);
         });
       }
       if (i % 2000 === 0) {
@@ -190,11 +197,53 @@
         await new Promise((r) => setTimeout(r, 0));
       }
     }
-    if (!error) await dec.flush();
-    if (dec.state !== 'closed') dec.close();
-    if (error) throw error;
+    if (!error) {
+      const flushed = await Promise.race([dec.flush().then(() => true), new Promise((r) => setTimeout(() => r(false), 20000))]);
+      if (!flushed) { stop(); return false; }
+    }
+    stop();
+    if (error) { console.warn('AudioDecoder failed, using fallback', error); return false; }
+    if (outputs === 0) return false;
     onProgress && onProgress(1);
     return true;
+  }
+
+  // Fallback for browsers without a working WebCodecs AAC decoder (e.g. Firefox on Android):
+  // re-wrap ~20 s of frames as a tiny M4A (lossless) and decode it with decodeAudioData.
+  // Progress per chunk and flat memory, unlike decoding the whole file at once.
+  async function decodeChunked(d, onPcm, onProgress, signal) {
+    const n = d.samples.length;
+    const per = Math.max(64, Math.round((20 * d.meta.sampleRate) / 1024));
+    const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const ctx = new Ctx(1, 1, d.meta.sampleRate);
+    for (let a = 0; a < n; a += per) {
+      if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      const b = Math.min(n, a + per);
+      const pre = Math.max(0, a - 2); // two frames of pre-roll so the first real frame decodes cleanly
+      const blob = muxFrames(d, pre, b);
+      const buf = await decodeAB(ctx, await blob.arrayBuffer());
+      // Keep exactly the samples of frames [a, b), aligned to the end (drops pre-roll and priming).
+      const want = Math.round((d.starts[b] - d.starts[a]) * buf.sampleRate);
+      const chans = [];
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        const src = buf.getChannelData(c);
+        const out = new Float32Array(want);
+        const take = Math.min(want, src.length);
+        out.set(src.subarray(src.length - take), want - take);
+        chans.push(out);
+      }
+      onPcm(chans, want, buf.sampleRate);
+      onProgress && onProgress(b / n);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    return true;
+  }
+  // decodeAudioData, also for older Safari that only supports the callback form.
+  function decodeAB(ctx, ab) {
+    return new Promise((res, rej) => {
+      const pr = ctx.decodeAudioData(ab, res, rej);
+      if (pr && pr.then) pr.then(res, rej);
+    });
   }
 
   // ---------- PCM fallback (MP3, WAV, ALAC, odd M4A) ----------
@@ -271,5 +320,5 @@
     return new Blob([target.buffer], { type: 'audio/mp4' });
   }
 
-  window.M4A = { demux, muxFrames, frameBytes, frameAt, decodeStream, decodeWhole, wavBlob, aacBlob, canEncodeAac };
+  window.M4A = { demux, muxFrames, frameBytes, frameAt, decodeStream, decodeChunked, decodeWhole, wavBlob, aacBlob, canEncodeAac };
 })();

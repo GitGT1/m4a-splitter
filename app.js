@@ -25,7 +25,12 @@
   async function setBusy(on, text) {
     state.busy = on;
     $('progress').classList.toggle('hidden', !on);
-    if (on) progress(0, text || 'Working');
+    document.body.classList.toggle('busy', on);
+    if (on) {
+      state.abort = new AbortController();
+      state.jobStart = Date.now();
+      progress(0, text || 'Working');
+    }
     updateButtons();
     try {
       if (on && navigator.wakeLock && !wakeLock) wakeLock = await navigator.wakeLock.request('screen');
@@ -33,11 +38,35 @@
     } catch (e) { /* wake lock is a nice-to-have */ }
   }
   function progress(frac, text) {
-    $('barFill').style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
+    frac = Math.max(0, Math.min(1, frac));
+    $('barFill').style.width = Math.round(frac * 100) + '%';
     if (text) $('progressText').textContent = text;
+    // Rough time left once there is enough signal.
+    const el = (Date.now() - (state.jobStart || Date.now())) / 1000;
+    let eta = '';
+    if (frac > 0.03 && frac < 1 && el > 2) {
+      const left = (el * (1 - frac)) / frac;
+      eta = left < 60 ? ` · ~${Math.ceil(left)} s left` : ` · ~${Math.ceil(left / 60)} min left`;
+    }
+    $('progressPct').textContent = Math.round(frac * 100) + '%' + eta;
   }
+  const aborted = () => state.abort && state.abort.signal.aborted;
+  const isAbort = (e) => e && e.name === 'AbortError';
+
+  // Warn before reload / closing while work is running.
+  window.addEventListener('beforeunload', (e) => {
+    if (!state.busy) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  // Screen off / app switch: the browser pauses the page. Tell the user when they are back.
+  let hiddenAt = 0;
   document.addEventListener('visibilitychange', async () => {
-    if (state.busy && document.visibilityState === 'visible' && navigator.wakeLock && !wakeLock) {
+    if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+    if (!state.busy) return;
+    if (hiddenAt && Date.now() - hiddenAt > 3000) toast('Welcome back. Continuing where it paused.');
+    if (navigator.wakeLock && !wakeLock) {
       try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { /* ignore */ }
     }
   });
@@ -84,14 +113,15 @@
         <div class="grow">
           <div class="name">${esc(f.name)}</div>
           <div class="info">${f.error ? `<span class="err">${esc(f.error)}</span>` : esc(f.info || 'Reading…')}
-            ${f.status && !f.error && f.info ? `<span class="tag ${f.mode === 'copy' ? 'ok' : ''}">${esc(f.status)}</span>` : ''}</div>
+            ${f.status && !f.error && f.info ? `<span class="tag ${f.mode === 'copy' && !f.restored ? 'ok' : ''}">${esc(f.status)}</span>` : ''}</div>
         </div>
         <button class="btn icon" type="button" data-remove="${f.id}" aria-label="Remove ${esc(f.name)}" ${state.busy ? 'disabled' : ''}>✕</button>
       </li>`).join('');
     updateButtons();
   }
 
-  function readyFiles() { return state.files.filter((f) => !f.error && f.duration); }
+  // Files that can be (re)split. Restored sessions only have their parts, not the original.
+  function readyFiles() { return state.files.filter((f) => !f.error && f.duration && !f.restored); }
 
   function updateButtons() {
     const ok = readyFiles().length > 0 && !state.busy;
@@ -117,18 +147,22 @@
       f.analysis = Analysis.analyzeBuffer(f.pcm);
       return f.analysis;
     }
-    const an = new Analysis.Analyzer();
-    const ok = await M4A.decodeStream(f.demux, (ch, n, sr) => an.push(ch, n, sr), (p) => progress(p * 0.8, `${label}: analysing audio ${Math.round(p * 100)}%`));
-    if (ok) {
+    const signal = state.abort && state.abort.signal;
+    const onProg = (p) => progress(p * 0.8, `${label}: finding pauses`);
+    let an = new Analysis.Analyzer();
+    progress(0, `${label}: finding pauses`);
+    if (await M4A.decodeStream(f.demux, (ch, n, sr) => an.push(ch, n, sr), onProg, signal)) {
       f.analysis = an.finish();
       return f.analysis;
     }
-    // No WebCodecs AAC decoder: try decoding the whole file at once.
-    progress(0.3, label + ': analysing audio');
+    // No working WebCodecs decoder (e.g. Firefox on Android): decode in 20 s chunks instead.
+    an = new Analysis.Analyzer();
     try {
-      const buf = await M4A.decodeWhole(await f.file.arrayBuffer());
-      f.analysis = Analysis.analyzeBuffer(buf);
+      await M4A.decodeChunked(f.demux, (ch, n, sr) => an.push(ch, n, sr), onProg, signal);
+      f.analysis = an.finish();
     } catch (e) {
+      if (isAbort(e)) throw e;
+      console.warn('Chunked decode failed', e);
       f.analysis = null;
     }
     return f.analysis;
@@ -223,15 +257,15 @@
       for (let fi = 0; fi < files.length; fi++) {
         const f = files[fi];
         const label = files.length > 1 ? `File ${fi + 1}/${files.length}` : 'Splitting';
-        revokeParts(f);
         if (smart && !(await analyze(f, label))) {
           toast('This browser cannot decode AAC, so cuts are at exact times. Use Chrome, Edge or Safari for Smart split.');
         }
         const plan = planParts(f, state.unit, value, smart);
         const pad = String(plan.length).length < 2 ? 2 : String(plan.length).length;
         const ext = f.mode === 'copy' || f.aac ? 'm4a' : 'wav';
-        f.parts = [];
+        const out = [];
         for (let i = 0; i < plan.length; i++) {
+          if (aborted()) throw new DOMException('Cancelled', 'AbortError');
           const p = plan[i];
           progress((smart ? 0.8 : 0) + ((i + 1) / plan.length) * (smart ? 0.2 : 1), `${label}: writing part ${i + 1} of ${plan.length}`);
           await tick();
@@ -239,21 +273,27 @@
           if (f.mode === 'copy') blob = M4A.muxFrames(f.demux, p.from, p.to);
           else if (f.aac) blob = await M4A.aacBlob(f.pcm, p.from, p.to);
           else blob = M4A.wavBlob(f.pcm, p.from, p.to);
-          f.parts.push({
+          out.push({
             index: i, start: p.start, end: p.end, snapped: p.snapped, blob, size: blob.size,
             name: `${baseName(f.name)}_part${String(i + 1).padStart(pad, '0')}.${ext}`,
             lufs: f.analysis ? Analysis.lufs(f.analysis, p.start, p.end) : undefined,
           });
         }
+        revokeParts(f);
+        f.parts = out;
         f.transcript = null;
       }
       renderResults();
       $('resultsCard').classList.remove('hidden');
+      $('restoredNote').classList.add('hidden');
       updateCost();
+      renderStatus();
+      $('transcriptBox').classList.add('hidden');
+      Session.save(state.files);
       ok = true;
     } catch (e) {
-      console.error(e);
-      toast('Split failed: ' + (e.message || e));
+      if (isAbort(e)) toast('Cancelled');
+      else { console.error(e); toast('Split failed: ' + (e.message || e)); }
     } finally {
       await setBusy(false);
     }
@@ -282,11 +322,12 @@
   async function measureLoudness(f) {
     await setBusy(true, 'Measuring loudness');
     try {
+      if (f.restored) return toast('Pick the original recording again to measure loudness.');
       if (!(await analyze(f, 'Loudness'))) return toast('This browser cannot decode AAC, so loudness is unavailable.');
       for (const p of f.parts) p.lufs = Analysis.lufs(f.analysis, p.start, p.end);
       renderResults();
     } catch (e) {
-      toast('Could not measure: ' + (e.message || e));
+      toast(isAbort(e) ? 'Cancelled' : 'Could not measure: ' + (e.message || e));
     } finally {
       await setBusy(false);
     }
@@ -327,7 +368,7 @@
           <button class="btn small" type="button" data-chap="txt" data-file="${f.id}">Chapters .txt</button>
           <button class="btn small" type="button" data-chap="cue" data-file="${f.id}">CUE sheet</button>
           <button class="btn small" type="button" data-chap="json" data-file="${f.id}">Chapters JSON</button>
-          ${hasLufs ? '' : `<button class="btn small" type="button" data-lufs="${f.id}">Measure loudness</button>`}
+          ${hasLufs || f.restored ? '' : `<button class="btn small" type="button" data-lufs="${f.id}">Measure loudness</button>`}
         </div>
       </div>`;
     }).join('');
@@ -460,9 +501,7 @@
     }
     if (!jobs.length) return toast('All parts are already transcribed');
     renderStatus();
-    state.abort = new AbortController();
-    $('cancelBtn').classList.remove('hidden');
-    await setBusy(true, 'Transcribing');
+    await setBusy(true, `Transcribing 0 of ${jobs.length} parts`);
     let done = 0;
     try {
       await Transcribe.runQueue(jobs, 2, async ({ f, p }) => {
@@ -475,6 +514,7 @@
           p.tNote = 'done';
           f.transcript = Transcribe.merge(f.parts);
           showTranscript(f.id);
+          Session.save(state.files);
         } catch (e) {
           p.tStatus = e.name === 'AbortError' ? 'queued' : 'failed';
           p.tNote = e.name === 'AbortError' ? 'cancelled' : (e.status === 401 ? 'Invalid API key' : e.message);
@@ -484,8 +524,8 @@
         renderStatus();
       });
     } finally {
-      $('cancelBtn').classList.add('hidden');
       await setBusy(false);
+      updateButtons();
     }
     const failed = jobs.filter((j) => j.p.tStatus === 'failed').length;
     if (failed) toast(`${failed} part${failed > 1 ? 's' : ''} failed. Tap Retry.`);
@@ -540,6 +580,7 @@
       renderResults();
       if (!state.files.some((x) => x.parts)) $('resultsCard').classList.add('hidden');
       updateButtons();
+      Session.save(state.files);
     });
 
     $('unitSeg').addEventListener('click', (e) => {
@@ -593,11 +634,13 @@
       updateButtons();
       $('player').pause();
       $('player').classList.add('hidden');
+      $('restoredNote').classList.add('hidden');
+      Session.clear();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 
     $('transcribeBtn').addEventListener('click', () => transcribe());
-    $('cancelBtn').addEventListener('click', () => state.abort && state.abort.abort());
+    $('stopBtn').addEventListener('click', () => state.abort && state.abort.abort());
     $('statusList').addEventListener('click', (e) => {
       const b = e.target.closest('[data-retry]');
       if (b && !state.busy) transcribe([b.dataset.retry]);
@@ -719,9 +762,34 @@
     return '<ol><li>In Chrome or Edge, click the install icon at the right end of the address bar.</li><li>Or open the browser menu → <b>Install M4A Splitter</b>.</li></ol>';
   }
 
+  // Bring back parts and transcripts from the last session (reload, crash, tab killed).
+  async function restoreSession() {
+    const snap = await Session.load();
+    if (!snap || !snap.files || !snap.files.length || state.files.length) return;
+    for (const sf of snap.files) {
+      const parts = sf.parts.map((p) => ({ ...p, tStatus: p.tStatus === 'done' ? 'done' : undefined, tNote: p.tStatus === 'done' ? 'done' : '' }));
+      const f = {
+        id: nextId++, name: sf.name, mode: sf.mode, aac: sf.aac, restored: true, parts,
+        duration: parts[parts.length - 1].end,
+        info: `${S.clock(parts[parts.length - 1].end)} · ${parts.length} parts`, status: 'Restored',
+      };
+      f.transcript = Transcribe.merge(parts);
+      state.files.push(f);
+    }
+    renderFiles();
+    renderResults();
+    renderStatus();
+    updateCost();
+    $('resultsCard').classList.remove('hidden');
+    $('restoredNote').classList.remove('hidden');
+    if (state.files.some((f) => f.transcript.length)) showTranscript();
+    updateButtons();
+  }
+
   bind();
   restoreSettings();
   updateButtons();
+  restoreSession();
   setupPwa();
   window.__app = state; // handy for debugging and tests
 })();
