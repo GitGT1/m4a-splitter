@@ -67,7 +67,10 @@
           f.status = f.aac ? 'Re-encoded to M4A' : 'Output as WAV';
         }
       } catch (e) {
-        f.error = 'Cannot read this file: ' + (e.message || e);
+        // The picker no longer filters by type, so anything can land here.
+        f.error = /^(audio|video)\//.test(file.type) || /\.(m4a|mp4|aac|mp3|wav|ogg|opus|flac|3gp|amr)$/i.test(file.name)
+          ? 'This browser cannot read this audio file. Try exporting it as M4A or MP3.'
+          : "This isn't an audio file. Pick a recording (M4A, MP3, WAV…).";
         f.status = 'Error';
       }
       renderFiles();
@@ -519,7 +522,8 @@
   // ---------- events ----------
   function bind() {
     const drop = $('drop');
-    $('fileInput').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
+    ['fileInput', 'fileInputMulti'].forEach((id) => $(id).addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; }));
+    if (/Android/i.test(navigator.userAgent)) $('androidHelp').classList.remove('hidden');
     ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
     ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('over')));
     drop.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]); });

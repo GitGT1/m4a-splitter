@@ -168,10 +168,16 @@ dialog li { margin: 4px 0; }
   <section class="card">
     <h2><span class="step">1</span> Recording</h2>
     <label class="drop" id="drop">
-      <input id="fileInput" type="file" accept=".m4a,.mp4,.aac,.mp3,.wav,.ogg,.opus,.flac,audio/*" multiple>
-      <strong>Drop M4A files here or tap to choose</strong>
+      <input id="fileInput" type="file">
+      <strong>Drop a recording here or tap to choose</strong>
       <span class="muted small">M4A is split losslessly. MP3, WAV, OGG and FLAC also work.</span>
     </label>
+    <div class="row" style="margin-top:8px">
+      <label class="small" style="cursor:pointer;color:var(--accent);text-decoration:underline">
+        <input id="fileInputMulti" type="file" multiple class="hidden">Add several files
+      </label>
+    </div>
+    <p class="hint hidden" id="androidHelp">Fastest: in your recorder app open the recording and tap <b>Share → Splitter</b> (install this app with Chrome first). Or tap above and pick the file from Drive or Downloads. Recordings in <i>Android/data</i> are hidden by Android; use Share instead.</p>
     <ul class="files" id="fileList"></ul>
   </section>
 
