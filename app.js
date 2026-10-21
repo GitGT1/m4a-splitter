@@ -92,10 +92,15 @@
 
   function updateButtons() {
     const ok = readyFiles().length > 0 && !state.busy;
+    const hasParts = state.files.some((f) => f.parts && f.parts.length);
+    $('pipeBtn').disabled = !ok;
     $('quickBtn').disabled = !ok;
     $('smartBtn').disabled = !ok;
     document.querySelectorAll('[data-remove]').forEach((b) => (b.disabled = state.busy));
-    $('transcribeBtn').disabled = state.busy;
+    $('transcribeBtn').disabled = state.busy || !hasParts;
+    $('transcribeBtn').textContent = hasParts ? 'Transcribe parts' : 'Split a recording first';
+    const done = { 1: readyFiles().length > 0, 2: hasParts, 3: state.files.some((f) => f.transcript && f.transcript.length) };
+    document.querySelectorAll('#steps [data-step]').forEach((li) => li.classList.toggle('done', !!done[li.dataset.step]));
     $('zipBtn').disabled = state.busy;
     $('resetBtn').disabled = state.busy;
   }
@@ -209,6 +214,7 @@
     const value = parseFloat($('lenInput').value);
     if (!(value > 0)) return toast('Enter a part length');
     const files = readyFiles();
+    let ok = false;
     await setBusy(true, 'Starting');
     try {
       for (let fi = 0; fi < files.length; fi++) {
@@ -240,14 +246,33 @@
       }
       renderResults();
       $('resultsCard').classList.remove('hidden');
-      $('transcribeCard').classList.remove('hidden');
       updateCost();
-      $('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      ok = true;
     } catch (e) {
       console.error(e);
       toast('Split failed: ' + (e.message || e));
     } finally {
       await setBusy(false);
+    }
+    return ok;
+  }
+
+  // One tap: split for transcription (about 10 min, max ~20 MB, on pauses), then transcribe.
+  async function splitAndTranscribe() {
+    setUnit('min');
+    const kbps = Math.max(...readyFiles().map((f) => (f.mode === 'copy' ? f.demux.meta.bitrate / 1000 : 128)), 128);
+    const maxMin = (20e6 * 8) / (kbps * 1000) / 60;
+    $('lenInput').value = Math.max(1, Math.min(10, Math.floor(maxMin)));
+    saveSettings();
+    if (!(await split(true))) return;
+    if (transcribeOptions().apiKey || $('endpoint').value.trim()) {
+      $('transcribeCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      await transcribe();
+    } else {
+      showKeyEntry();
+      $('transcribeCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      $('apiKey').focus();
+      toast('Split done. Paste your Groq key, then tap Transcribe parts.');
     }
   }
 
@@ -379,7 +404,22 @@
 
   function saveSettings() {
     store.set(SETTINGS_STORE, JSON.stringify({ model: $('model').value, language: $('language').value, glossary: $('glossary').value, endpoint: $('endpoint').value, unit: state.unit, len: $('lenInput').value }));
-    store.set(KEY_STORE, $('rememberKey').checked ? $('apiKey').value.trim() : null);
+    store.set(KEY_STORE, $('rememberKey').checked ? $('apiKey').value.trim() || null : null);
+    renderKeyState();
+  }
+
+  // Saved key: show a compact "saved" row instead of the input.
+  let editingKey = false;
+  function renderKeyState() {
+    const saved = !!store.get(KEY_STORE) && !!$('apiKey').value.trim();
+    const compact = saved && !editingKey;
+    $('keySaved').classList.toggle('hidden', !compact);
+    $('keyEntry').classList.toggle('hidden', compact);
+    if (saved) $('keyHint').textContent = '…' + $('apiKey').value.trim().slice(-4);
+  }
+  function showKeyEntry() {
+    editingKey = true;
+    renderKeyState();
   }
 
   function updateCost() {
@@ -494,23 +534,15 @@
       state.files = state.files.filter((x) => x.id !== +b.dataset.remove);
       renderFiles();
       renderResults();
-      if (!state.files.some((x) => x.parts)) { $('resultsCard').classList.add('hidden'); $('transcribeCard').classList.add('hidden'); }
+      if (!state.files.some((x) => x.parts)) $('resultsCard').classList.add('hidden');
+      updateButtons();
     });
 
     $('unitSeg').addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (b) setUnit(b.dataset.unit);
     });
-    $('presetBtn').addEventListener('click', () => {
-      // About 10 min, but never over ~20 MB, so every part fits Groq's upload limit.
-      setUnit('min');
-      const kbps = Math.max(...readyFiles().map((f) => (f.mode === 'copy' ? f.demux.meta.bitrate / 1000 : 128)), 128);
-      const maxMin = (20e6 * 8) / (kbps * 1000) / 60;
-      $('lenInput').value = Math.max(1, Math.min(10, Math.floor(maxMin)));
-      saveSettings();
-      if (readyFiles().length && !state.busy) split(true);
-      else toast('Preset set. Add a file, then tap Smart split.');
-    });
+    $('pipeBtn').addEventListener('click', splitAndTranscribe);
     $('lenInput').addEventListener('change', saveSettings);
     $('quickBtn').addEventListener('click', () => split(false));
     $('smartBtn').addEventListener('click', () => split(true));
@@ -554,7 +586,7 @@
       $('statusList').innerHTML = '';
       $('transcriptBox').classList.add('hidden');
       $('resultsCard').classList.add('hidden');
-      $('transcribeCard').classList.add('hidden');
+      updateButtons();
       $('player').pause();
       $('player').classList.add('hidden');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -569,7 +601,19 @@
     $('model').addEventListener('change', () => { updateCost(); saveSettings(); });
     ['language', 'glossary', 'endpoint'].forEach((id) => $(id).addEventListener('change', saveSettings));
     $('rememberKey').addEventListener('change', saveSettings);
-    $('apiKey').addEventListener('change', saveSettings);
+    $('apiKey').addEventListener('change', () => { editingKey = false; saveSettings(); });
+    $('keyChange').addEventListener('click', () => { showKeyEntry(); $('apiKey').focus(); $('apiKey').select(); });
+    $('keyForget').addEventListener('click', () => {
+      store.set(KEY_STORE, null);
+      $('apiKey').value = '';
+      $('rememberKey').checked = false;
+      showKeyEntry();
+      toast('Key removed from this device');
+    });
+    $('settingsBtn').addEventListener('click', () => {
+      $('transcribeCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if ($('keyEntry').classList.contains('hidden')) $('keyChange').focus(); else $('apiKey').focus();
+    });
     $('transcriptFile').addEventListener('change', () => showTranscript(+$('transcriptFile').value));
     $('showTimes').addEventListener('change', () => { $('transcriptText').blur(); showTranscript(state.current && state.current.id); });
     $('copyBtn').addEventListener('click', () => navigator.clipboard.writeText($('transcriptText').value).then(() => toast('Transcript copied'), () => toast('Copy blocked by the browser')));
@@ -591,6 +635,9 @@
   }
 
   function restoreSettings() {
+    // Key first: setUnit() below saves settings, which would otherwise clear it.
+    const key = store.get(KEY_STORE);
+    if (key) { $('apiKey').value = key; $('rememberKey').checked = true; }
     let s = {};
     try { s = JSON.parse(store.get(SETTINGS_STORE) || '{}'); } catch (e) { /* ignore */ }
     if (s.model) $('model').value = s.model;
@@ -600,25 +647,32 @@
     $('endpoint').placeholder = Transcribe.GROQ_URL;
     if (s.len) $('lenInput').value = s.len;
     if (s.unit) setUnit(s.unit);
-    const key = store.get(KEY_STORE);
-    if (key) { $('apiKey').value = key; $('rememberKey').checked = true; }
+    renderKeyState();
   }
 
   // ---------- PWA: install, service worker, share target ----------
   function setupPwa() {
     let deferred = null;
+    const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+    if (standalone) $('installBtn').classList.add('hidden');
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       deferred = e;
-      $('installBtn').classList.remove('hidden');
     });
+    window.addEventListener('appinstalled', () => $('installBtn').classList.add('hidden'));
     $('installBtn').addEventListener('click', async () => {
-      if (!deferred) return;
-      deferred.prompt();
-      await deferred.userChoice;
-      deferred = null;
-      $('installBtn').classList.add('hidden');
+      if (deferred) {
+        deferred.prompt();
+        const choice = await deferred.userChoice;
+        deferred = null;
+        if (choice.outcome === 'accepted') $('installBtn').classList.add('hidden');
+        return;
+      }
+      $('installSteps').innerHTML = installHelp();
+      const dlg = $('installDlg');
+      if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
     });
+    $('installClose').addEventListener('click', () => { const d = $('installDlg'); d.close ? d.close() : d.removeAttribute('open'); });
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
@@ -639,8 +693,31 @@
     }
   }
 
+  function installHelp() {
+    const ua = navigator.userAgent;
+    const android = /Android/i.test(ua), ios = /iPhone|iPad|iPod/i.test(ua);
+    const firefox = /Firefox|FxiOS/i.test(ua);
+    if (location.protocol === 'file:') {
+      return '<p>Install works from the online version. Open <a href="https://gitgt1.github.io/m4a-splitter/">gitgt1.github.io/m4a-splitter</a> in Chrome or Edge.</p>';
+    }
+    if (android && firefox) {
+      return '<ol><li>Tap the ⋮ menu.</li><li>Tap <b>Add to Home screen</b> (or <b>Install</b>).</li></ol><p class="muted small">Firefox does not support sharing a recording straight into the app. For Share → Splitter from your recorder, open this page in <b>Chrome</b> and install from there.</p>';
+    }
+    if (firefox) {
+      return '<p>Firefox on computers cannot install web apps. Everything still works in this tab, so a bookmark is enough.</p><p class="muted small">To get an app icon, open this page in <b>Chrome</b> or <b>Edge</b> and click the install icon in the address bar.</p>';
+    }
+    if (ios) {
+      return '<ol><li>Tap the <b>Share</b> button in Safari.</li><li>Tap <b>Add to Home Screen</b>.</li></ol>';
+    }
+    if (android) {
+      return '<ol><li>Tap the ⋮ menu in Chrome.</li><li>Tap <b>Install app</b> or <b>Add to Home screen</b>.</li></ol><p class="muted small">Then in your recorder app: Share → Splitter.</p>';
+    }
+    return '<ol><li>In Chrome or Edge, click the install icon at the right end of the address bar.</li><li>Or open the browser menu → <b>Install M4A Splitter</b>.</li></ol>';
+  }
+
   bind();
   restoreSettings();
+  updateButtons();
   setupPwa();
   window.__app = state; // handy for debugging and tests
 })();

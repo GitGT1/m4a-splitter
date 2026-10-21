@@ -117,6 +117,20 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
 .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 10; max-width: calc(100% - 32px); }
 .keep-open { font-size: 13px; color: var(--warn); margin: 6px 0 0; }
 
+.steps { display: flex; gap: 6px; margin: -8px 0 16px; padding: 0; list-style: none; font-size: 13px; flex-wrap: wrap; }
+.steps li { display: flex; align-items: center; gap: 6px; padding: 6px 12px 6px 6px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.steps li .step { width: 22px; height: 22px; font-size: 12px; }
+.steps li.done { color: var(--text); border-color: var(--accent); }
+.steps li.done .step { background: var(--accent); color: var(--accent-ink); }
+.steps .arrow { color: var(--muted); align-self: center; border: 0; background: none; padding: 0; }
+.key-saved { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 14px; }
+.key-saved strong { color: var(--accent); }
+.intro { font-size: 14px; color: var(--muted); margin: -4px 0 12px; }
+dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 20px; max-width: min(440px, calc(100% - 32px)); }
+dialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog h3 { margin: 0 0 10px; font-size: 17px; }
+dialog ol { padding-left: 20px; margin: 8px 0; }
+dialog li { margin: 4px 0; }
 @media (max-width: 600px) {
   .card { padding: 14px; }
   .parts .hide-sm { display: none; }
@@ -124,6 +138,10 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
   .btn { flex: 1 1 auto; justify-content: center; }
   .btn.small, .btn.icon { flex: none; }
   .split-buttons .btn { flex: 1 1 140px; }
+  header { flex-wrap: wrap; row-gap: 10px; }
+  header > div { flex: 1 1 calc(100% - 52px); }
+  header .spacer { display: none; }
+  header .btn.small { flex: 1 1 0; justify-content: center; }
 }
 </style>
 </head>
@@ -133,11 +151,19 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
     <img src="icons/icon.svg" alt="">
     <div>
       <h1>M4A Splitter</h1>
-      <p>Split and transcribe recordings. Splitting never leaves your device.</p>
+      <p>Record → Split → Transcribe. Splitting stays on your device, only transcription goes to Groq.</p>
     </div>
     <span class="spacer"></span>
-    <button id="installBtn" class="btn small hidden" type="button">Install app</button>
+    <button id="settingsBtn" class="btn small" type="button" aria-label="Groq key settings">⚙ Key</button>
+    <button id="installBtn" class="btn small" type="button">Install</button>
   </header>
+  <ol class="steps" id="steps">
+    <li data-step="1"><span class="step">1</span> Recording</li>
+    <li class="arrow" aria-hidden="true">→</li>
+    <li data-step="2"><span class="step">2</span> Split</li>
+    <li class="arrow" aria-hidden="true">→</li>
+    <li data-step="3"><span class="step">3</span> Transcribe</li>
+  </ol>
 
   <section class="card">
     <h2><span class="step">1</span> Recording</h2>
@@ -151,6 +177,13 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
 
   <section class="card" id="splitCard">
     <h2><span class="step">2</span> Split</h2>
+    <div class="row split-buttons">
+      <button type="button" class="btn primary" id="pipeBtn" disabled>Split &amp; transcribe</button>
+    </div>
+    <p class="hint">One tap: cuts into parts of about 10 min on pauses, then sends them to Groq for the transcript.</p>
+    <details>
+      <summary>Split only (custom length)</summary>
+      <div style="margin-top:10px">
     <div class="row">
       <div class="seg" role="group" aria-label="Part length unit" id="unitSeg">
         <button type="button" data-unit="min" aria-pressed="true">Minutes</button>
@@ -160,14 +193,13 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
       <input id="lenInput" type="number" min="0.1" step="any" value="10" aria-label="Length per part">
       <span class="muted small" id="lenLabel">minutes per part</span>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button type="button" class="chip" id="presetBtn">Preset: for transcription (about 10 min, cut on pauses)</button>
-    </div>
-    <div class="row split-buttons" style="margin-top:14px">
-      <button type="button" class="btn" id="quickBtn" disabled>Quick split</button>
-      <button type="button" class="btn primary" id="smartBtn" disabled>Smart split</button>
-    </div>
-    <p class="hint">Quick split cuts at exact times. Smart split moves each cut to the nearest pause (within 10% of the part length, max 15 s), so no word is cut in half.</p>
+      </div>
+      <div class="row split-buttons" style="margin-top:10px">
+        <button type="button" class="btn" id="quickBtn" disabled>Quick split</button>
+        <button type="button" class="btn" id="smartBtn" disabled>Smart split</button>
+      </div>
+      <p class="hint">Uses the length above. Quick split cuts at exact times. Smart split moves each cut to the nearest pause (within 10% of the part length, max 15 s), so no word is cut in half.</p>
+    </details>
     <div class="progress hidden" id="progress">
       <div class="bar"><div id="barFill"></div></div>
       <p id="progressText">Working</p>
@@ -186,16 +218,24 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
     <audio id="player" class="hidden" controls></audio>
   </section>
 
-  <section class="card hidden" id="transcribeCard">
+  <section class="card" id="transcribeCard">
     <h2><span class="step">3</span> Transcribe</h2>
-    <div class="row">
-      <label class="field">Groq API key
-        <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
-      </label>
+    <p class="intro">Paste your Groq key once (free at <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>). Tick Remember and it stays on this device only.</p>
+    <div class="key-saved hidden" id="keySaved">
+      <strong>✓ Groq key saved</strong><span class="muted small" id="keyHint"></span>
+      <span class="spacer" style="flex:1"></span>
+      <button type="button" class="btn small" id="keyChange">Change</button>
+      <button type="button" class="btn small" id="keyForget">Forget</button>
     </div>
-    <div class="row" style="margin-top:6px">
-      <label class="check"><input id="rememberKey" type="checkbox"> Remember key on this device</label>
-      <a class="small" href="https://console.groq.com/keys" target="_blank" rel="noopener">Get a key</a>
+    <div id="keyEntry">
+      <div class="row">
+        <label class="field">Groq API key
+          <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
+        </label>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label class="check"><input id="rememberKey" type="checkbox"> Remember key on this device</label>
+      </div>
     </div>
     <div class="row" style="margin-top:12px">
       <label class="field">Model
@@ -252,6 +292,11 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32p
     </div>
   </section>
 </div>
+<dialog id="installDlg">
+  <h3>Install on your device</h3>
+  <div id="installSteps"></div>
+  <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" id="installClose">OK</button></div>
+</dialog>
 <div class="toast hidden" id="toast" role="status"></div>
 
 <script src="vendor/mp4box.all.min.js"></script>

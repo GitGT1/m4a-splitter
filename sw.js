@@ -1,5 +1,5 @@
 /* Offline cache for the app shell, and the Android share-target inbox. */
-const VERSION = 'm4asplit-v1';
+const VERSION = 'm4asplit-v2';
 const SHELL = [
   './', 'index.html', 'app.js', 'm4a.js', 'analysis.js', 'subtitles.js', 'transcribe.js', 'manifest.json',
   'vendor/mp4box.all.min.js', 'vendor/mp4-muxer.js', 'vendor/jszip.min.js',

@@ -1,12 +1,16 @@
 # M4A Splitter
 
-Split recordings into parts on your own device, then transcribe them with Groq Whisper.
+Record → Split → Transcribe. Split recordings into parts on your own device, then transcribe them with Groq Whisper.
+
+Live: https://gitgt1.github.io/m4a-splitter/ · Recommended: Chrome on Android, Chrome or Edge on PC.
+
+**Quick start:** drop a recording → paste your Groq key in step 3 (tick Remember) → tap **Split & transcribe**.
 
 ## Use on PC
 Double-click `index.html` (Chrome or Edge). Everything works except install and offline mode, which need the hosted version.
 
 ## Use on Android
-Open the hosted link in Chrome, tap ⋮ → **Add to Home screen**. After that:
+Open the hosted link in Chrome and tap **Install** (or ⋮ → **Add to Home screen**). Firefox on Android can add it to the home screen too, but cannot receive recordings via Share. Firefox on PC cannot install web apps; the page still works in a tab. After installing:
 - It opens like an app and works offline (except transcription).
 - In your recorder app: **Share → Splitter** loads the recording directly.
 - **Share all** / **Share** sends parts or the transcript to Drive, WhatsApp, Gmail or Claude.
@@ -15,13 +19,14 @@ Open the hosted link in Chrome, tap ⋮ → **Add to Home screen**. After that:
 - **Minutes / Seconds / MB** per part.
 - **Quick split**: exact times.
 - **Smart split**: each cut moves to the nearest pause (within 10% of the part length, max 15 s). Tagged `pause`, or `quiet` when no real pause was near.
-- **Preset for transcription**: about 10 min per part, max ~20 MB, cut on pauses.
+- **Split & transcribe** (one tap): about 10 min per part, max ~20 MB, cut on pauses, then transcription starts if a key is saved.
+- **Split only** (custom length) holds Quick/Smart split and the length setting.
 - M4A (AAC) is copied frame by frame: no re-encoding, no quality loss, cuts accurate to ~23 ms.
 - MP3, WAV, OGG and FLAC are decoded and written as M4A where the browser can encode AAC (Chrome/Edge on Windows, Android), otherwise WAV.
 - Extras: ZIP of everything, chapter marks (.txt, CUE, JSON), loudness per part in LUFS.
 
 ## Transcribe
-1. Get a key at https://console.groq.com/keys and paste it. Tick "Remember" to store it on this device only.
+1. Get a key at https://console.groq.com/keys and paste it in step 3 (or tap **⚙ Key** at the top). Tick "Remember" to store it on this device only; Change/Forget appear once saved.
 2. Pick model and language (or auto). Add names/terms so Whisper spells them right.
 3. **Transcribe parts**. Two parts run at a time, rate limits retry automatically, a failed part can be retried alone.
 4. The transcript merges all parts with timestamps matching the original recording. Copy, share, or download .txt / .srt / .vtt / .json.
