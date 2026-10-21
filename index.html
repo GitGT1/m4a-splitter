@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>M4A Splitter</title>
+<meta name="description" content="Split M4A recordings into parts and transcribe them. Splitting runs on your device.">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+:root {
+  --bg: #f6f7f8; --surface: #ffffff; --surface-2: #f0f2f4; --text: #15191e; --muted: #5d6874;
+  --border: #dde1e6; --accent: #0f766e; --accent-ink: #ffffff; --accent-soft: #e2f3f1;
+  --ok: #15803d; --warn: #b45309; --err: #b91c1c; --radius: 14px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1114; --surface: #161a1f; --surface-2: #1e242a; --text: #e8ebee; --muted: #9aa5b1;
+    --border: #2a3139; --accent: #2dd4bf; --accent-ink: #062a26; --accent-soft: #123532;
+    --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --shadow: none; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1114; --surface: #161a1f; --surface-2: #1e242a; --text: #e8ebee; --muted: #9aa5b1;
+  --border: #2a3139; --accent: #2dd4bf; --accent-ink: #062a26; --accent-soft: #123532;
+  --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --shadow: none; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.wrap { max-width: 860px; margin: 0 auto; padding: 16px 16px 64px; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 0 20px; }
+header img { width: 36px; height: 36px; border-radius: 9px; }
+header h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+header p { margin: 0; color: var(--muted); font-size: 14px; }
+header .spacer { flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; margin-bottom: 16px; }
+.card h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+.step { width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 700; display: inline-grid; place-items: center; flex: none; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.hidden { display: none !important; }
+
+.drop { display: block; border: 2px dashed var(--border); border-radius: 12px; padding: 28px 16px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop strong { display: block; font-size: 17px; margin-bottom: 4px; }
+.drop input { display: none; }
+
+.files { list-style: none; margin: 12px 0 0; padding: 0; }
+.files li { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.files li:first-child { border-top: 0; }
+.files .name { font-weight: 600; word-break: break-all; }
+.files .info { font-size: 13px; color: var(--muted); }
+.files .grow { flex: 1; min-width: 0; }
+
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.seg { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: transparent; color: var(--muted); padding: 8px 14px; border-radius: 8px; font: inherit; font-size: 14px; cursor: pointer; min-height: 40px; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-weight: 600; }
+input[type="number"], input[type="text"], input[type="password"], input[type="url"], select, textarea {
+  font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; min-height: 44px;
+}
+input[type="number"] { width: 110px; }
+textarea { width: 100%; resize: vertical; }
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); flex: 1 1 200px; min-width: 0; }
+label.field > * { color: var(--text); font-size: 15px; }
+label.check { display: inline-flex; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+
+.btn { font: inherit; font-size: 15px; font-weight: 600; border-radius: 10px; padding: 10px 16px; min-height: 44px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); display: inline-flex; align-items: center; gap: 8px; text-decoration: none; }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.small { font-size: 13px; padding: 6px 10px; min-height: 34px; font-weight: 500; }
+.btn.icon { padding: 6px; width: 38px; min-height: 38px; justify-content: center; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.chip { font: inherit; font-size: 13px; border: 1px solid var(--accent); color: var(--accent); background: transparent; border-radius: 999px; padding: 6px 12px; cursor: pointer; min-height: 36px; }
+.chip:hover { background: var(--accent-soft); }
+.hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+
+.progress { margin-top: 14px; }
+.bar { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.progress p { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+
+.result { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
+.result:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.result h3 { font-size: 15px; margin: 0 0 4px; word-break: break-all; }
+.parts { width: 100%; border-collapse: collapse; font-size: 14px; margin: 10px 0; }
+.parts th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 6px 6px; border-bottom: 1px solid var(--border); }
+.parts td { padding: 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; vertical-align: middle; }
+.parts td.act { white-space: nowrap; text-align: right; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.tag.ok { color: var(--ok); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+details { margin-top: 10px; }
+summary { cursor: pointer; font-size: 14px; color: var(--muted); min-height: 32px; }
+
+.status-list { list-style: none; padding: 0; margin: 12px 0; font-size: 14px; }
+.status-list li { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--border); flex: none; }
+.dot.run { background: var(--warn); animation: pulse 1s infinite; }
+.dot.done { background: var(--ok); }
+.dot.fail { background: var(--err); }
+@keyframes pulse { 50% { opacity: .35; } }
+.status-list .grow { flex: 1; }
+.err { color: var(--err); }
+#transcriptText { min-height: 260px; font-size: 15px; line-height: 1.6; margin-top: 10px; }
+.toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 10; max-width: calc(100% - 32px); }
+.keep-open { font-size: 13px; color: var(--warn); margin: 6px 0 0; }
+
+@media (max-width: 600px) {
+  .card { padding: 14px; }
+  .parts .hide-sm { display: none; }
+  .parts td, .parts th { padding: 6px 3px; }
+  .btn { flex: 1 1 auto; justify-content: center; }
+  .btn.small, .btn.icon { flex: none; }
+  .split-buttons .btn { flex: 1 1 140px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="icons/icon.svg" alt="">
+    <div>
+      <h1>M4A Splitter</h1>
+      <p>Split and transcribe recordings. Splitting never leaves your device.</p>
+    </div>
+    <span class="spacer"></span>
+    <button id="installBtn" class="btn small hidden" type="button">Install app</button>
+  </header>
+
+  <section class="card">
+    <h2><span class="step">1</span> Recording</h2>
+    <label class="drop" id="drop">
+      <input id="fileInput" type="file" accept=".m4a,.mp4,.aac,.mp3,.wav,.ogg,.opus,.flac,audio/*" multiple>
+      <strong>Drop M4A files here or tap to choose</strong>
+      <span class="muted small">M4A is split losslessly. MP3, WAV, OGG and FLAC also work.</span>
+    </label>
+    <ul class="files" id="fileList"></ul>
+  </section>
+
+  <section class="card" id="splitCard">
+    <h2><span class="step">2</span> Split</h2>
+    <div class="row">
+      <div class="seg" role="group" aria-label="Part length unit" id="unitSeg">
+        <button type="button" data-unit="min" aria-pressed="true">Minutes</button>
+        <button type="button" data-unit="sec" aria-pressed="false">Seconds</button>
+        <button type="button" data-unit="mb" aria-pressed="false">MB</button>
+      </div>
+      <input id="lenInput" type="number" min="0.1" step="any" value="10" aria-label="Length per part">
+      <span class="muted small" id="lenLabel">minutes per part</span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="chip" id="presetBtn">Preset: for transcription (about 10 min, cut on pauses)</button>
+    </div>
+    <div class="row split-buttons" style="margin-top:14px">
+      <button type="button" class="btn" id="quickBtn" disabled>Quick split</button>
+      <button type="button" class="btn primary" id="smartBtn" disabled>Smart split</button>
+    </div>
+    <p class="hint">Quick split cuts at exact times. Smart split moves each cut to the nearest pause (within 10% of the part length, max 15 s), so no word is cut in half.</p>
+    <div class="progress hidden" id="progress">
+      <div class="bar"><div id="barFill"></div></div>
+      <p id="progressText">Working</p>
+      <p class="keep-open">Keep this screen open until it finishes.</p>
+    </div>
+  </section>
+
+  <section class="card hidden" id="resultsCard">
+    <h2><span class="step">✓</span> Parts</h2>
+    <div id="results"></div>
+    <div class="actions" style="margin-top:14px">
+      <button type="button" class="btn primary" id="zipBtn">Download all (ZIP)</button>
+      <button type="button" class="btn hidden" id="shareAllBtn">Share all</button>
+      <button type="button" class="btn" id="resetBtn">Split another file</button>
+    </div>
+    <audio id="player" class="hidden" controls></audio>
+  </section>
+
+  <section class="card hidden" id="transcribeCard">
+    <h2><span class="step">3</span> Transcribe</h2>
+    <div class="row">
+      <label class="field">Groq API key
+        <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_...">
+      </label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label class="check"><input id="rememberKey" type="checkbox"> Remember key on this device</label>
+      <a class="small" href="https://console.groq.com/keys" target="_blank" rel="noopener">Get a key</a>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="field">Model
+        <select id="model">
+          <option value="whisper-large-v3-turbo">Whisper large v3 turbo (fast, $0.04/h)</option>
+          <option value="whisper-large-v3">Whisper large v3 (most accurate, $0.11/h)</option>
+        </select>
+      </label>
+      <label class="field">Language
+        <select id="language">
+          <option value="">Auto-detect</option>
+          <option value="en">English</option>
+          <option value="el">Greek</option>
+          <option value="es">Spanish</option>
+          <option value="ca">Catalan</option>
+          <option value="de">German</option>
+          <option value="fr">French</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+        </select>
+      </label>
+    </div>
+    <label class="field" style="margin-top:12px">Names and terms to spell right (optional)
+      <textarea id="glossary" rows="2" placeholder="ESADE, Georgios, Series A, cap table"></textarea>
+    </label>
+    <details>
+      <summary>Advanced</summary>
+      <label class="field" style="margin-top:8px">API endpoint (any OpenAI-compatible transcription URL)
+        <input id="endpoint" type="url" spellcheck="false">
+      </label>
+    </details>
+    <div class="row" style="margin-top:14px">
+      <button type="button" class="btn primary" id="transcribeBtn">Transcribe parts</button>
+      <button type="button" class="btn hidden" id="cancelBtn">Cancel</button>
+      <span class="muted small" id="costEst"></span>
+    </div>
+    <p class="hint">Only the transcription step sends audio out, part by part, to Groq.</p>
+    <ul class="status-list" id="statusList"></ul>
+
+    <div id="transcriptBox" class="hidden">
+      <div class="row">
+        <select id="transcriptFile" class="hidden" aria-label="Transcript for file"></select>
+        <label class="check"><input id="showTimes" type="checkbox" checked> Timestamps</label>
+      </div>
+      <textarea id="transcriptText" spellcheck="true" aria-label="Transcript"></textarea>
+      <div class="actions">
+        <button type="button" class="btn" id="copyBtn">Copy</button>
+        <button type="button" class="btn hidden" id="shareTxtBtn">Share</button>
+        <button type="button" class="btn small" data-fmt="txt">.txt</button>
+        <button type="button" class="btn small" data-fmt="srt">.srt</button>
+        <button type="button" class="btn small" data-fmt="vtt">.vtt</button>
+        <button type="button" class="btn small" data-fmt="json">.json</button>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="toast hidden" id="toast" role="status"></div>
+
+<script src="vendor/mp4box.all.min.js"></script>
+<script src="vendor/mp4-muxer.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script src="m4a.js"></script>
+<script src="analysis.js"></script>
+<script src="subtitles.js"></script>
+<script src="transcribe.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
