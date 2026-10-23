@@ -39,6 +39,7 @@ Cost: turbo about $0.04 per hour of audio, large-v3 about $0.11. Only this step 
 - After each part the app checks for a missing end (> 15 s) or gaps (> 30 s with sound) and re-sends just that stretch once.
 - Your own edits are never overwritten: new text shows an **Update** prompt.
 - If parts come back in different languages, a hint suggests picking the language.
+- **Wrong language?** Pick the spoken language (choosing the wrong one makes Whisper translate). If the current Language/Model differs from what the transcript was made with, a banner offers **Re-transcribe in …**. **Re-transcribe all** redoes every part for any reason. Old text stays until each part is replaced; Cancel keeps a usable transcript.
 
 ## Library
 - Every split is saved automatically. **Library** tab: rename, search titles and transcripts, open again, copy/share/download the transcript, audio ZIP, delete audio, delete.

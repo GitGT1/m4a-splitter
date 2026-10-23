@@ -288,6 +288,7 @@ dialog li { margin: 4px 0; }
         </select>
       </label>
     </div>
+    <p class="hint">Pick the language that is spoken. Choosing the wrong one makes Whisper translate into it.</p>
     <label class="field" style="margin-top:12px">Names and terms to spell right (optional)
       <textarea id="glossary" rows="2" placeholder="ESADE, Georgios, Series A, cap table"></textarea>
     </label>
@@ -299,6 +300,7 @@ dialog li { margin: 4px 0; }
     </details>
     <div class="row" style="margin-top:14px">
       <button type="button" class="btn primary" id="transcribeBtn">Transcribe parts</button>
+      <button type="button" class="btn hidden" id="redoAllBtn">Re-transcribe all</button>
       <span class="muted small" id="costEst"></span>
     </div>
     <p class="hint">Only the transcription step sends audio out, part by part, to Groq.</p>
@@ -310,6 +312,7 @@ dialog li { margin: 4px 0; }
         <label class="check"><input id="showTimes" type="checkbox" checked> Timestamps</label>
       </div>
       <div class="banner warn hidden" id="missingBanner"><span id="missingText"></span><button type="button" class="btn small" id="missingBtn">Transcribe missing parts</button></div>
+      <div class="banner warn hidden" id="redoBanner"><span id="redoText"></span><button type="button" class="btn small" id="redoBtn">Re-transcribe all</button></div>
       <div class="banner hidden" id="langBanner"><span id="langText"></span></div>
       <div class="banner hidden" id="updateBanner"><span>New text arrived. Update replaces your edits.</span><button type="button" class="btn small" id="updateBtn">Update</button></div>
       <textarea id="transcriptText" spellcheck="true" aria-label="Transcript"></textarea>

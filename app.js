@@ -485,7 +485,29 @@
     }).join('');
   }
 
-  async function transcribe(onlyKeys) {
+  const LANG_NAMES = { en: 'english', de: 'german', el: 'greek', es: 'spanish', ca: 'catalan', fr: 'french', it: 'italian', pt: 'portuguese' };
+  const langLabel = (code) => (code ? $('language').querySelector(`option[value="${code}"]`)?.textContent || code : 'Auto-detect');
+  const modelLabel = (m) => (m === 'whisper-large-v3' ? 'large v3' : 'large v3 turbo');
+  const titleCase = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+
+  // Settings a part was transcribed with. Older transcripts only have Whisper's reported language.
+  function usedWith(p) {
+    const t = p.transcript;
+    if (!t) return null;
+    if (t.opts) return t.opts;
+    const code = Object.keys(LANG_NAMES).find((k) => LANG_NAMES[k] === String(t.language || '').toLowerCase() || k === t.language);
+    return { language: code || null, model: null, legacy: true };
+  }
+  // Does a finished part match the current Language / Model settings?
+  function matchesSettings(p) {
+    const u = usedWith(p);
+    if (!u) return false;
+    const lang = $('language').value, model = $('model').value;
+    if (u.legacy) return !lang || u.language === lang; // model unknown for old transcripts
+    return (u.language || '') === lang && u.model === model;
+  }
+
+  async function transcribe(onlyKeys, redo) {
     const opt = transcribeOptions();
     if (!opt.apiKey && opt.endpoint === Transcribe.GROQ_URL) { $('apiKey').focus(); return toast('Paste your Groq API key first'); }
     saveSettings();
@@ -495,13 +517,15 @@
       for (const p of f.parts) {
         const key = f.id + ':' + p.index;
         if (!p.blob) continue; // audio removed from the Library
-        if (onlyKeys ? onlyKeys.includes(key) : p.tStatus !== 'done') {
+        // Redo: every part not yet made with the current settings (old text stays until replaced).
+        // redo 'all': every part. redo true: parts not made with the current settings.
+        if (onlyKeys ? onlyKeys.includes(key) : redo === 'all' ? true : redo ? !(p.tStatus === 'done' && matchesSettings(p)) : p.tStatus !== 'done') {
           p.tStatus = 'queued'; p.tNote = '';
           jobs.push({ f, p });
         }
       }
     }
-    if (!jobs.length) return toast('All parts are already transcribed');
+    if (!jobs.length) return toast(redo ? 'All parts already use these settings' : 'All parts are already transcribed. To change language or model, use Re-transcribe all.');
     renderStatus();
     await setBusy(true, `Transcribing 0 of ${jobs.length} parts`);
     let done = 0;
@@ -512,7 +536,9 @@
         renderStatus();
         try {
           const onNote = (note) => { p.tNote = note; renderStatus(); };
-          p.transcript = await Transcribe.transcribePart(p, opt, state.abort.signal, onNote);
+          const fresh = await Transcribe.transcribePart(p, opt, state.abort.signal, onNote);
+          fresh.opts = { language: opt.language || null, model: opt.model, prompt: opt.prompt || '' };
+          p.transcript = fresh;
           // Whisper sometimes skips the end or a stretch: check and re-send just that stretch once.
           let filled = 0;
           try {
@@ -528,8 +554,14 @@
           showTranscript(f.id);
           persistFile(f);
         } catch (e) {
-          p.tStatus = e.name === 'AbortError' ? 'queued' : 'failed';
-          p.tNote = e.name === 'AbortError' ? 'cancelled' : (e.status === 401 ? 'Invalid API key' : e.message);
+          if (p.transcript && p.transcript.segments && p.transcript.segments.length) {
+            // A redo that did not finish keeps the previous text.
+            p.tStatus = 'done';
+            p.tNote = isAbort(e) ? 'cancelled, kept previous text' : 'redo failed, kept previous text: ' + (e.status === 401 ? 'invalid API key' : e.message);
+          } else {
+            p.tStatus = isAbort(e) ? 'queued' : 'failed';
+            p.tNote = isAbort(e) ? 'cancelled' : (e.status === 401 ? 'Invalid API key' : e.message);
+          }
         }
         done++;
         progress(done / jobs.length, `Transcribed ${done} of ${jobs.length} parts`);
@@ -574,6 +606,36 @@
     }).join('\n\n') + '\n';
   }
 
+  // Banner when the transcript was made with other settings than the ones selected now.
+  function renderRedo(f) {
+    const withText = f.parts.filter((p) => p.transcript && p.transcript.segments.length);
+    const redoable = f.parts.filter((p) => p.blob);
+    const stale = withText.filter((p) => !matchesSettings(p));
+    const show = !!stale.length && !state.busy;
+    $('redoBanner').classList.toggle('hidden', !show);
+    const allDone = f.parts.length && f.parts.every((p) => p.tStatus === 'done');
+    $('redoAllBtn').classList.toggle('hidden', !allDone || !redoable.length || state.busy);
+    if (!show) return;
+    const u = usedWith(stale[0]);
+    const was = (u.language ? langLabel(u.language) : u.legacy && stale[0].transcript.language ? titleCase(String(stale[0].transcript.language)) : 'Auto-detect') + (u.model ? ' · ' + modelLabel(u.model) : '');
+    const now = langLabel($('language').value) + ' · ' + modelLabel($('model').value);
+    const cost = Transcribe.estimateCost(stale.filter((p) => p.blob).map((p) => p.end - p.start), $('model').value);
+    const partial = stale.length < withText.length ? ` ${withText.length - stale.length} of ${withText.length} parts already use the new settings.` : '';
+    $('redoText').textContent = redoable.length
+      ? `Made with ${was}. Your settings now say ${now}.${partial} About $${cost < 0.01 ? cost.toFixed(3) : cost.toFixed(2)}.`
+      : `Made with ${was}. The audio was removed, so it cannot be transcribed again.`;
+    $('redoBtn').textContent = `Re-transcribe in ${langLabel($('language').value)}`;
+    $('redoBtn').classList.toggle('hidden', !redoable.length);
+  }
+
+  function confirmRedo() {
+    const parts = state.files.flatMap((f) => (f.parts || []).filter((p) => p.blob));
+    if (!parts.length) return toast('The audio was removed, so it cannot be transcribed again.');
+    const cost = Transcribe.estimateCost(parts.map((p) => p.end - p.start), $('model').value);
+    const msg = `Re-transcribe ${parts.length} part${parts.length > 1 ? 's' : ''} with ${langLabel($('language').value)} · ${modelLabel($('model').value)}? About $${cost < 0.01 ? cost.toFixed(3) : cost.toFixed(2)}. The current text stays until each part is redone.`;
+    if (confirm(msg)) transcribe(null, 'all');
+  }
+
   function fitText() {
     const ta = $('transcriptText');
     ta.style.height = 'auto';
@@ -606,6 +668,7 @@
     const missing = f.parts.filter((p) => !(p.transcript && p.transcript.segments.length) && p.blob).length;
     $('missingBanner').classList.toggle('hidden', !missing || state.busy);
     $('missingText').textContent = `${done} of ${total} parts transcribed.`;
+    renderRedo(f);
     $('transcriptBox').classList.remove('hidden');
     requestAnimationFrame(fitText);
     $('shareTxtBtn').classList.toggle('hidden', !navigator.share);
@@ -698,6 +761,7 @@
       $('player').classList.add('hidden');
       $('restoredNote').classList.add('hidden');
       $('langBanner').classList.add('hidden');
+      $('redoAllBtn').classList.add('hidden');
       state.current = null;
       saveWorkspace(); // everything stays in the Library
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -734,6 +798,9 @@
       if (state.current) { state.current.editedText = null; persistFile(state.current); showTranscript(state.current.id); }
     });
     $('missingBtn').addEventListener('click', () => { if (!state.busy) transcribe(); });
+    $('redoBtn').addEventListener('click', () => { if (!state.busy) transcribe(null, true); });
+    $('redoAllBtn').addEventListener('click', () => { if (!state.busy) confirmRedo(); });
+    ['language', 'model'].forEach((id) => $(id).addEventListener('change', () => { if (state.current) showTranscript(state.current.id); }));
     window.addEventListener('resize', fitText);
     $('showTimes').addEventListener('change', () => showTranscript(state.current && state.current.id));
     $('copyBtn').addEventListener('click', () => navigator.clipboard.writeText($('transcriptText').value).then(() => toast('Transcript copied'), () => toast('Copy blocked by the browser')));
