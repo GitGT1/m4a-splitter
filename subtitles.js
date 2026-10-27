@@ -57,5 +57,11 @@
     return JSON.stringify(parts.map((p, i) => ({ title: `Part ${i + 1}`, start: +p.start.toFixed(3), end: +p.end.toFixed(3) })), null, 2);
   }
 
-  window.Subs = { clock, hms, srt, vtt, txt, chaptersTxt, cue, chaptersJson };
+  // WebVTT chapter track (one cue per part), for players that show chapters.
+  function chaptersVtt(parts) {
+    return 'WEBVTT\n\n' + parts.map((p, i) => `Part ${i + 1}\n${stamp(p.start, '.')} --> ${stamp(p.end, '.')}\nPart ${i + 1}\n`).join('\n');
+  }
+  const partHeading = (p, i) => `── Part ${i + 1} · ${clock(p.start)}–${clock(p.end)} ──`;
+
+  window.Subs = { clock, hms, srt, vtt, txt, chaptersTxt, cue, chaptersJson, chaptersVtt, partHeading };
 })();

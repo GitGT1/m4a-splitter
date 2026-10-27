@@ -38,6 +38,7 @@ Cost: turbo about $0.04 per hour of audio, large-v3 about $0.11. Only this step 
 - Parts without text appear inline (`[Part 6 · 50:00–58:12 · not transcribed yet]`) with **Transcribe missing parts**.
 - After each part the app checks for a missing end (> 15 s) or gaps (> 30 s with sound) and re-sends just that stretch once.
 - Your own edits are never overwritten: new text shows an **Update** prompt.
+- **Part markers** (switch next to Timestamps, on by default): a `── Part 2 · 10:00–20:00 ──` line before each part in the view and `.txt`. `.json` includes a `chapters` list; the ZIP adds `_chapters.vtt`.
 - If parts come back in different languages, a hint suggests picking the language.
 - **Wrong language?** Pick the spoken language (choosing the wrong one makes Whisper translate). If the current Language/Model differs from what the transcript was made with, a banner offers **Re-transcribe in …**. **Re-transcribe all** redoes every part for any reason. Old text stays until each part is replaced; Cancel keeps a usable transcript.
 
@@ -48,6 +49,7 @@ Cost: turbo about $0.04 per hour of audio, large-v3 about $0.11. Only this step 
 
 ## Long jobs, screen off, refresh
 - A progress bar with % and time left stays pinned at the bottom, with **Cancel**.
+- One job at a time: buttons that start work are disabled while something runs; Cancel shows "Cancelling…" until it has really stopped.
 - Reloading or closing while working asks "Leave site?". Pull-to-refresh is disabled.
 - The screen is kept on while working. If you lock the phone or switch apps, Android pauses the page; it continues when you come back.
 - Finished parts and transcripts are saved on the device. If Android closes the page, reopen the app: it restores them, and **Transcribe parts** only sends what is still missing.

@@ -21,23 +21,36 @@
   }
 
   // ---------- busy state, progress, wake lock ----------
-  let wakeLock = null;
-  async function setBusy(on, text) {
-    state.busy = on;
-    $('progress').classList.toggle('hidden', !on);
-    document.body.classList.toggle('busy', on);
-    if (on) {
-      state.abort = new AbortController();
-      state.jobStart = Date.now();
-      progress(0, text || 'Working');
-    }
+  // One job at a time. startJob() returns null if something is already running;
+  // only the job that started the panel can update or close it.
+  let wakeLock = null, jobSeq = 0;
+  function startJob(text) {
+    if (state.busy) { toast('Busy: wait until it finishes or tap Cancel'); return null; }
+    const job = { id: ++jobSeq, abort: new AbortController() };
+    state.job = job;
+    state.abort = job.abort;
+    state.busy = true;
+    state.jobStart = Date.now();
+    $('progress').classList.remove('hidden');
+    document.body.classList.add('busy');
+    $('stopBtn').textContent = 'Cancel';
+    $('stopBtn').disabled = false;
+    progress(0, text || 'Working');
     updateButtons();
-    try {
-      if (on && navigator.wakeLock && !wakeLock) wakeLock = await navigator.wakeLock.request('screen');
-      if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
-    } catch (e) { /* wake lock is a nice-to-have */ }
+    if (navigator.wakeLock && !wakeLock) navigator.wakeLock.request('screen').then((w) => { wakeLock = w; }, () => {});
+    return job;
+  }
+  function endJob(job) {
+    if (!job || state.job !== job) return;
+    state.job = null;
+    state.busy = false;
+    $('progress').classList.add('hidden');
+    document.body.classList.remove('busy');
+    updateButtons();
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   }
   function progress(frac, text) {
+    if (!state.busy) return; // nothing running: never let a stale callback touch the panel
     frac = Math.max(0, Math.min(1, frac));
     $('barFill').style.width = Math.round(frac * 100) + '%';
     if (text) $('progressText').textContent = text;
@@ -136,6 +149,8 @@
     document.querySelectorAll('#steps [data-step]').forEach((li) => li.classList.toggle('done', !!done[li.dataset.step]));
     $('zipBtn').disabled = state.busy;
     $('resetBtn').disabled = state.busy;
+    // Anything that starts work or changes saved recordings waits for the running job.
+    document.querySelectorAll('[data-lufs], #libList [data-act="open"], #libList [data-act="zip"], #libList [data-act="noaudio"], #libList [data-act="delete"], #redoBtn, #redoAllBtn, #missingBtn, [data-retry]').forEach((b) => (b.disabled = state.busy));
   }
 
   // ---------- analysis (loudness envelope) ----------
@@ -148,7 +163,7 @@
       return f.analysis;
     }
     const signal = state.abort && state.abort.signal;
-    const onProg = (p) => progress(p * 0.8, `${label}: finding pauses`);
+    const onProg = (p) => { if (!(signal && signal.aborted)) progress(p * 0.8, `${label}: finding pauses`); };
     let an = new Analysis.Analyzer();
     progress(0, `${label}: finding pauses`);
     if (await M4A.decodeStream(f.demux, (ch, n, sr) => an.push(ch, n, sr), onProg, signal)) {
@@ -252,7 +267,8 @@
     if (!(value > 0)) return toast('Enter a part length');
     const files = readyFiles();
     let ok = false;
-    await setBusy(true, 'Starting');
+    const job = startJob('Starting');
+    if (!job) return false;
     try {
       for (let fi = 0; fi < files.length; fi++) {
         const f = files[fi];
@@ -295,13 +311,14 @@
       if (isAbort(e)) toast('Cancelled');
       else { console.error(e); toast('Split failed: ' + (e.message || e)); }
     } finally {
-      await setBusy(false);
+      endJob(job);
     }
     return ok;
   }
 
   // One tap: split for transcription (about 10 min, max ~20 MB, on pauses), then transcribe.
   async function splitAndTranscribe() {
+    if (state.busy) return toast('Busy: wait until it finishes or tap Cancel');
     setUnit('min');
     const kbps = Math.max(...readyFiles().map((f) => (f.mode === 'copy' ? f.demux.meta.bitrate / 1000 : 128)), 128);
     const maxMin = (20e6 * 8) / (kbps * 1000) / 60;
@@ -320,7 +337,8 @@
   }
 
   async function measureLoudness(f) {
-    await setBusy(true, 'Measuring loudness');
+    const job = startJob('Measuring loudness');
+    if (!job) return;
     try {
       if (f.restored) return toast('Pick the original recording again to measure loudness.');
       if (!(await analyze(f, 'Loudness'))) return toast('This browser cannot decode AAC, so loudness is unavailable.');
@@ -329,7 +347,7 @@
     } catch (e) {
       toast(isAbort(e) ? 'Cancelled' : 'Could not measure: ' + (e.message || e));
     } finally {
-      await setBusy(false);
+      endJob(job);
     }
   }
 
@@ -372,6 +390,7 @@
         </div>
       </div>`;
     }).join('');
+    updateButtons();
     const all = done.flatMap((f) => f.parts.filter((p) => p.blob).map((p) => new File([p.blob], p.name, { type: p.blob.type })));
     $('shareAllBtn').classList.toggle('hidden', !canShareFiles(all.slice(0, 1)));
   }
@@ -397,7 +416,8 @@
 
   async function zipFiles(done) {
     if (!done.length) return;
-    await setBusy(true, 'Building ZIP');
+    const job = startJob('Building ZIP');
+    if (!job) return;
     try {
       const zip = new JSZip();
       for (const f of done) {
@@ -406,6 +426,7 @@
         dir.file(baseName(f.name) + '_chapters.txt', S.chaptersTxt(f.parts));
         dir.file(baseName(f.name) + '.cue', S.cue(f.parts, f.name));
         dir.file(baseName(f.name) + '_chapters.json', S.chaptersJson(f.parts));
+        dir.file(baseName(f.name) + '_chapters.vtt', S.chaptersVtt(f.parts));
         if (f.transcript && f.transcript.length) {
           dir.file(baseName(f.name) + '_transcript.txt', f.editedText || viewText(f, true));
           dir.file(baseName(f.name) + '.srt', S.srt(f.transcript));
@@ -417,7 +438,7 @@
     } catch (e) {
       toast('ZIP failed: ' + (e.message || e));
     } finally {
-      await setBusy(false);
+      endJob(job);
     }
   }
 
@@ -448,7 +469,7 @@
   }
 
   function saveSettings() {
-    store.set(SETTINGS_STORE, JSON.stringify({ model: $('model').value, language: $('language').value, glossary: $('glossary').value, endpoint: $('endpoint').value, unit: state.unit, len: $('lenInput').value }));
+    store.set(SETTINGS_STORE, JSON.stringify({ model: $('model').value, language: $('language').value, glossary: $('glossary').value, endpoint: $('endpoint').value, unit: state.unit, len: $('lenInput').value, parts: showParts() }));
     store.set(KEY_STORE, $('rememberKey').checked ? $('apiKey').value.trim() || null : null);
     renderKeyState();
   }
@@ -483,6 +504,7 @@
         <span class="muted small">${esc(p.tNote || st)}</span></span>
         ${st === 'failed' ? `<button class="btn small" type="button" data-retry="${f.id}:${p.index}">Retry</button>` : ''}</li>`;
     }).join('');
+    $('statusList').querySelectorAll('[data-retry]').forEach((b) => (b.disabled = state.busy));
   }
 
   const LANG_NAMES = { en: 'english', de: 'german', el: 'greek', es: 'spanish', ca: 'catalan', fr: 'french', it: 'italian', pt: 'portuguese' };
@@ -508,6 +530,7 @@
   }
 
   async function transcribe(onlyKeys, redo) {
+    if (state.busy) return toast('Busy: wait until it finishes or tap Cancel');
     const opt = transcribeOptions();
     if (!opt.apiKey && opt.endpoint === Transcribe.GROQ_URL) { $('apiKey').focus(); return toast('Paste your Groq API key first'); }
     saveSettings();
@@ -527,7 +550,8 @@
     }
     if (!jobs.length) return toast(redo ? 'All parts already use these settings' : 'All parts are already transcribed. To change language or model, use Re-transcribe all.');
     renderStatus();
-    await setBusy(true, `Transcribing 0 of ${jobs.length} parts`);
+    const job = startJob(`Transcribing 0 of ${jobs.length} parts`);
+    if (!job) return;
     let done = 0;
     try {
       await Transcribe.runQueue(jobs, 2, async ({ f, p }) => {
@@ -568,8 +592,7 @@
         renderStatus();
       });
     } finally {
-      await setBusy(false);
-      updateButtons();
+      endJob(job);
     }
     if (!opt.language) {
       const touched = [...new Set(jobs.map((j) => j.f))];
@@ -596,15 +619,22 @@
   }
 
   // Full transcript text in part order, with a visible line for every part that has no text yet.
-  function viewText(f, withTimes) {
-    return f.parts.map((p) => {
+  // withParts: a "── Part 2 · 10:00–20:00 ──" line before each part (only when there are several).
+  function viewText(f, withTimes, withParts = showParts()) {
+    const marks = withParts && f.parts.length > 1;
+    return f.parts.map((p, i) => {
+      let body;
       if (p.transcript && p.transcript.segments.length) {
-        return S.txt(p.transcript.segments.map((x) => ({ ...x, start: x.start + p.start, end: x.end + p.start })), withTimes).trim();
+        body = S.txt(p.transcript.segments.map((x) => ({ ...x, start: x.start + p.start, end: x.end + p.start })), withTimes).trim();
+      } else {
+        const why = !p.blob ? 'audio removed' : p.tStatus === 'failed' ? 'failed, tap Transcribe missing parts' : 'not transcribed yet';
+        body = marks ? `[${why}]` : `[Part ${p.index + 1} · ${S.clock(p.start)}–${S.clock(p.end)} · ${why}]`;
       }
-      const why = !p.blob ? 'audio removed' : p.tStatus === 'failed' ? 'failed, tap Transcribe missing parts' : 'not transcribed yet';
-      return `[Part ${p.index + 1} · ${S.clock(p.start)}–${S.clock(p.end)} · ${why}]`;
+      return marks ? S.partHeading(p, i) + '\n' + body : body;
     }).join('\n\n') + '\n';
   }
+  const showParts = () => $('showParts').checked;
+  const chapterList = (parts) => parts.map((p, i) => ({ title: `Part ${i + 1}`, start: +p.start.toFixed(3), end: +p.end.toFixed(3) }));
 
   // Banner when the transcript was made with other settings than the ones selected now.
   function renderRedo(f) {
@@ -681,7 +711,7 @@
     if (fmt === 'txt') download(textBlob($('transcriptText').value), b + '_transcript.txt');
     if (fmt === 'srt') download(textBlob(S.srt(f.transcript)), b + '.srt');
     if (fmt === 'vtt') download(textBlob(S.vtt(f.transcript), 'text/vtt'), b + '.vtt');
-    if (fmt === 'json') download(textBlob(JSON.stringify({ file: f.name, segments: f.transcript }, null, 2), 'application/json'), b + '_transcript.json');
+    if (fmt === 'json') download(textBlob(JSON.stringify({ file: f.name, chapters: chapterList(f.parts), segments: f.transcript }, null, 2), 'application/json'), b + '_transcript.json');
   }
 
   // ---------- events ----------
@@ -741,7 +771,8 @@
         if (chap.dataset.chap === 'cue') download(textBlob(S.cue(f.parts, f.name)), b + '.cue');
         if (chap.dataset.chap === 'json') download(textBlob(S.chaptersJson(f.parts), 'application/json'), b + '_chapters.json');
       }
-      if (lu) measureLoudness(state.files.find((x) => x.id === +lu.dataset.lufs));
+      if (lu && !state.busy) measureLoudness(state.files.find((x) => x.id === +lu.dataset.lufs));
+      else if (lu) toast('Busy: wait until it finishes or tap Cancel');
     });
     $('zipBtn').addEventListener('click', zipAll);
     $('shareAllBtn').addEventListener('click', () => {
@@ -768,7 +799,12 @@
     });
 
     $('transcribeBtn').addEventListener('click', () => transcribe());
-    $('stopBtn').addEventListener('click', () => state.abort && state.abort.abort());
+    $('stopBtn').addEventListener('click', () => {
+      if (!state.busy || !state.abort) return;
+      state.abort.abort();
+      $('stopBtn').textContent = 'Cancelling…';
+      $('stopBtn').disabled = true;
+    });
     $('statusList').addEventListener('click', (e) => {
       const b = e.target.closest('[data-retry]');
       if (b && !state.busy) transcribe([b.dataset.retry]);
@@ -803,6 +839,7 @@
     ['language', 'model'].forEach((id) => $(id).addEventListener('change', () => { if (state.current) showTranscript(state.current.id); }));
     window.addEventListener('resize', fitText);
     $('showTimes').addEventListener('change', () => showTranscript(state.current && state.current.id));
+    $('showParts').addEventListener('change', () => { saveSettings(); showTranscript(state.current && state.current.id); });
     $('copyBtn').addEventListener('click', () => navigator.clipboard.writeText($('transcriptText').value).then(() => toast('Transcript copied'), () => toast('Copy blocked by the browser')));
     $('shareTxtBtn').addEventListener('click', () => {
       const f = state.current;
@@ -833,6 +870,7 @@
     $('endpoint').value = s.endpoint || '';
     $('endpoint').placeholder = Transcribe.GROQ_URL;
     if (s.len) $('lenInput').value = s.len;
+    if (s.parts === false) $('showParts').checked = false;
     if (s.unit) setUnit(s.unit);
     renderKeyState();
   }
@@ -988,14 +1026,14 @@
     window.scrollTo({ top: 0 });
   }
 
-  const entryText = (e, times = true) => {
+  const entryText = (e, times = true, parts = showParts()) => {
     if (e.editedText) return e.editedText;
-    return viewText({ parts: e.parts.map((p) => ({ ...p, tStatus: p.tStatus })) }, times);
+    return viewText({ parts: e.parts.map((p) => ({ ...p, tStatus: p.tStatus })) }, times, parts);
   };
   const entryDone = (e) => e.parts.filter((p) => p.transcript && p.transcript.segments.length).length;
 
   function snippet(text, q) {
-    const flat = text.replace(/\[\d+:\d\d:\d\d\]\s*/g, '').replace(/\s+/g, ' ').trim();
+    const flat = text.replace(/\[\d+:\d\d:\d\d\]\s*/g, '').replace(/── Part [^─]*──\s*/g, '').replace(/\s+/g, ' ').trim();
     if (!q) return esc(flat.slice(0, 220));
     const i = flat.toLowerCase().indexOf(q);
     if (i < 0) return esc(flat.slice(0, 220));
@@ -1008,7 +1046,7 @@
   async function renderLibrary(all) {
     all = all || (await Library.list());
     const q = $('libSearch').value.trim().toLowerCase();
-    const rows = all.filter((e) => !q || (e.title || '').toLowerCase().includes(q) || entryText(e, false).toLowerCase().includes(q));
+    const rows = all.filter((e) => !q || (e.title || '').toLowerCase().includes(q) || entryText(e, false, false).toLowerCase().includes(q));
     const date = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ', ' + new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
     $('libList').innerHTML = rows.length ? rows.map((e) => {
       const done = entryDone(e), n = e.parts.length;
@@ -1017,7 +1055,7 @@
       return `<div class="entry" data-id="${e.id}">
         <input class="title" value="${esc(e.title || e.name)}" data-title="${e.id}" aria-label="Title">
         <div class="meta">${date(e.createdAt)} · ${S.clock(e.duration)} · transcribed ${done}/${n} · ${e.audioRemoved ? 'audio removed' : 'audio kept until ' + audioUntil}</div>
-        ${hasText ? `<div class="snippet">${snippet(entryText(e, false), q)}</div>` : '<div class="snippet muted">No transcript yet.</div>'}
+        ${hasText ? `<div class="snippet">${snippet(entryText(e, false, false), q)}</div>` : '<div class="snippet muted">No transcript yet.</div>'}
         <div class="actions">
           <button class="btn small" type="button" data-act="open">Open</button>
           ${hasText ? `<button class="btn small" type="button" data-act="copy">Copy text</button>
@@ -1033,12 +1071,14 @@
       </div>`;
     }).join('') : `<div class="empty">${q ? 'Nothing matches “' + esc(q) + '”.' : 'Finished recordings appear here automatically.'}</div>`;
     const used = await Library.usage();
+    updateButtons();
     $('libStorage').textContent = `${all.length} recording${all.length === 1 ? '' : 's'}${used != null ? ' · ' + fmtSize(used) + ' used on this device' : ''} · audio is removed after ${Library.AUDIO_DAYS} days, transcripts are kept.`;
   }
 
   async function libraryAction(id, act) {
     const e = await Library.get(id);
     if (!e) return;
+    if (state.busy && ['open', 'zip', 'noaudio', 'delete'].includes(act)) return toast('Busy: wait until it finishes or tap Cancel');
     const b = (e.title || baseName(e.name)).replace(/[\\/:*?"<>|]+/g, '_');
     const segs = Transcribe.merge(e.parts);
     if (act === 'open') { showView(false); openEntries([e]); $('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
@@ -1051,7 +1091,7 @@
     if (act === 'txt') download(textBlob(entryText(e)), b + '_transcript.txt');
     if (act === 'srt') download(textBlob(S.srt(segs)), b + '.srt');
     if (act === 'vtt') download(textBlob(S.vtt(segs), 'text/vtt'), b + '.vtt');
-    if (act === 'json') download(textBlob(JSON.stringify({ title: e.title, file: e.name, segments: segs }, null, 2), 'application/json'), b + '_transcript.json');
+    if (act === 'json') download(textBlob(JSON.stringify({ title: e.title, file: e.name, chapters: chapterList(e.parts), segments: segs }, null, 2), 'application/json'), b + '_transcript.json');
     if (act === 'zip') zipFiles([fileFromEntry(e)]);
     if (act === 'noaudio') {
       if (!confirm('Delete the audio of “' + e.title + '”? The transcript is kept.')) return;

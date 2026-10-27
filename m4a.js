@@ -202,6 +202,7 @@
       if (!flushed) { stop(); return false; }
     }
     stop();
+    if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
     if (error) { console.warn('AudioDecoder failed, using fallback', error); return false; }
     if (outputs === 0) return false;
     onProgress && onProgress(1);
@@ -222,6 +223,7 @@
       const pre = Math.max(0, a - 2); // two frames of pre-roll so the first real frame decodes cleanly
       const blob = muxFrames(d, pre, b);
       const buf = await decodeAB(ctx, await blob.arrayBuffer());
+      if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       // Keep exactly the samples of frames [a, b), aligned to the end (drops pre-roll and priming).
       const want = Math.round((d.starts[b] - d.starts[a]) * buf.sampleRate);
       const chans = [];
