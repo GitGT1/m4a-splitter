@@ -8,16 +8,51 @@
   "background_color": "#f6f7f8",
   "theme_color": "#0f766e",
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
   ],
   "share_target": {
     "action": "./share",
     "method": "POST",
     "enctype": "multipart/form-data",
     "params": {
-      "files": [{ "name": "audio", "accept": ["audio/*", ".m4a", ".mp4", ".aac", ".mp3", ".wav", ".ogg", ".opus", ".flac"] }]
+      "files": [
+        {
+          "name": "audio",
+          "accept": [
+            "audio/*",
+            "video/mp4",
+            "video/3gpp",
+            "application/octet-stream",
+            ".m4a",
+            ".mp4",
+            ".aac",
+            ".mp3",
+            ".wav",
+            ".ogg",
+            ".opus",
+            ".flac",
+            ".3gp",
+            ".amr"
+          ]
+        }
+      ]
     }
-  }
+  },
+  "id": "./"
 }
